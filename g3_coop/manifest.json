@@ -1,0 +1,19 @@
+{
+  "id": "g3_coop",
+  "name": "Gen 3 Co-op",
+  "version": "0.7.2",
+  "api": 2,
+  "entry": "main.lua",
+  "options_schema": "options.lua",
+  "profile": "content",
+  "category": "GAMEPLAY",
+  "games": ["gen3"],
+  "game_version": ">=0.0.0-0 <2.0.0",
+  "priority": 900,
+  "dependencies": [],
+  "optional_dependencies": [],
+  "conflicts": [],
+  "permissions": ["network", "engine_internals"],
+  "affects_link": false,
+  "description": "Two players, two saves, one Hoenn: see your partner walk the same overworld over a direct connection."
+}

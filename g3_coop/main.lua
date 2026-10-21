@@ -1,0 +1,1273 @@
+-- Gen 3 co-op: two players, each on their own save, see each other in the
+-- same overworld.  One hosts, the other joins by address, over the engine's
+-- own link transport (src/link/Net.lua, ENet on UDP).  START > CO-OP hosts,
+-- joins or leaves (the join address is set in the launcher's settings); F8
+-- connects or disconnects in one key.  F7 (or START > CO-OP > SOUL LINK)
+-- shows the Soul Link run.
+--
+-- The partner is drawn on your screen (on your map or a connected one).
+-- Pressing A while facing them opens WAVE / BATTLE / TRADE; a battle or a
+-- trade asks the partner first, then runs the engine's own link battle or
+-- trade screen over the co-op connection.  Not yet: shared progression.
+-- See ../DESIGN.md.
+
+return function(mod)
+  local function import(rel)
+    return assert(load(assert(mod:read(rel)), "@g3_coop/" .. rel))()
+  end
+
+  local Protocol = import("lib/protocol.lua")
+  local Presence = import("lib/presence.lua")
+  local Ghost = import("lib/ghost.lua")
+  local Session = import("lib/session.lua")
+  local Channel = import("lib/channel.lua")
+  local Activity = import("lib/activity.lua")
+  local Requests = import("lib/requests.lua")
+  local Npcs = import("lib/npcs.lua")
+  local SoulLink = import("lib/soullink.lua")
+  local Tracker = import("lib/tracker.lua")
+  local Hud = import("lib/hud.lua")
+  local LevelCap = import("lib/levelcap.lua")
+
+  mod.options:define(import("options.lua"))
+
+  local Net = require("src.link.Net")
+  local Handshake = require("src.link.Handshake")
+  local GameVersion = require("src.core.GameVersion")
+  local GfxIds = require("src.core.game3.scripting.gfx_ids")
+
+  local session, status, game, requests, activity
+  -- when to try connecting again after a dropped link (see RETRY_REASONS)
+  local retryAt
+  local newRequests
+  local toasts, seenEmotes, lastWaveAt = {}, 0, -1
+
+  local function clock()
+    if love and love.timer and love.timer.getTime then return love.timer.getTime() end
+    return os.clock()
+  end
+
+  -- Soul Link's toasts get its label and colour (red for a death)
+  local BAD_WORDS = { "gone", "fainted", "over", "broken", "can't battle", "against the rules" }
+  local function toast(text, seconds)
+    text = tostring(text)
+    local t = { text = text, born = clock(), untilT = clock() + (seconds or 3), kind = "coop" }
+    local rest = text:match("^Soul Link: (.*)$")
+    if rest then
+      t.label, t.text, t.kind = "SOUL LINK", rest, "sl"
+      for _, w in ipairs(BAD_WORDS) do
+        if rest:find(w, 1, true) then t.kind = "bad" break end
+      end
+    end
+    toasts[#toasts + 1] = t
+    while #toasts > 3 do table.remove(toasts, 1) end
+  end
+
+  -- Engine modules through require: inside the mod sandbox `package` is a
+  -- stub whose `loaded` table is always empty, so looking modules up there
+  -- finds nothing (that silently disabled every position update in 0.1.x).
+  -- require hands back the live, already-loaded instance.
+  local engineModules = {}
+  local function engine(name)
+    local m = engineModules[name]
+    if m == nil then
+      local ok, loaded = pcall(require, "src.core.game3." .. name)
+      m = ok and type(loaded) == "table" and loaded or false
+      engineModules[name] = m
+    end
+    return m or nil
+  end
+
+  local function uiModule(name)
+    local ok, m = pcall(require, "src.ui.game3." .. name)
+    return ok and type(m) == "table" and m or nil
+  end
+
+  -- everything an activity drives (lib/activity.lua)
+  local function activityEngine()
+    return {
+      Link = engine("link"), LB = engine("link.battle"), LT = engine("link.trade"),
+      Game3Link = require("src.link.Game3Link"),
+      Message = uiModule("message"), Field = engine("field"),
+      TradeMenu = uiModule("link_trade_menu"),
+    }
+  end
+
+  -- Where a map sits on the local screen, in cells relative to the active
+  -- map: (0, 0) for the active map, the connection offset for a neighbour
+  -- the field is drawing alongside it, nil for anything off screen.
+  local function offsetOf(mapId)
+    local Map = engine("map")
+    if not (Map and mapId) then return nil end
+    if mapId == Map.current then return 0, 0 end
+    for _, e in ipairs(Map.world or {}) do
+      if e.id == mapId then return e.ox, e.oy end
+    end
+    return nil
+  end
+
+  -- every loaded mod and its version: map identity depends on content mods
+  -- (the Inclement port re-indexes and adds maps), not only on what the link
+  -- fingerprint covers
+  local function modsKey(g)
+    local parts = {}
+    for _, m in ipairs(Handshake.mods(g)) do
+      parts[#parts + 1] = tostring(m.id) .. "@" .. tostring(m.version)
+    end
+    return table.concat(parts, ",")
+  end
+
+  local function compat(localHello, remote)
+    if remote.game ~= localHello.game then return false, "different_game" end
+    if remote.mods ~= localHello.mods then return false, "different_mods" end
+    local verdict, why = Handshake.checkCompat(localHello.link, remote.link)
+    -- the ruleset is a battle setting; it does not change the world
+    if verdict == "full" or verdict == "ruleset_skew" then return true end
+    -- link battles need the identical release because they lockstep a
+    -- simulation; walking around only needs the same maps, which the data
+    -- fingerprint and the mod list already pin
+    if verdict == "engine_skew" and localHello.link.fingerprint ~= nil
+        and localHello.link.fingerprint == remote.link.fingerprint then
+      return true, "engine_skew"
+    end
+    return false, why or verdict
+  end
+
+  local REASONS = {
+    different_game = "different game",
+    different_mods = "different mods",
+    engine_mismatch = "different engine",
+    engine_release_mismatch = "different engine release",
+    fingerprint_mismatch = "different game data",
+    generation_mismatch = "different generation",
+    protocol_version = "different co-op version",
+    partner_left = "partner left",
+    timeout = "connection lost",
+    no_hello = "partner didn't answer",
+    network_error = "couldn't connect",
+    left = "disconnected",
+    stopped = "partner disconnected",
+  }
+
+  -- A link that worked and then dropped (the partner restarted, Wi-Fi
+  -- blinked) is retried until it comes back or F8 stops it; so is a first
+  -- attempt when CONNECT ON LOAD is on.  A refusal (different versions or
+  -- mods) is not: retrying can't fix it.
+  local RETRY_SECONDS = 5
+  local RETRY_REASONS = { partner_left = true, timeout = true, no_hello = true, network_error = true }
+
+  -- the host's wandering NPCs, mirrored on the joiner (lib/npcs.lua)
+  local npcs = Npcs.new(clock)
+
+  -- ------------------------------------------------------------ Soul Link
+
+  local function gameSession()
+    local Runtime = engine("runtime")
+    return Runtime and Runtime.getSession and Runtime.getSession()
+  end
+
+  -- an area's name as the game's map popup shows it: Ruby/Sapphire/
+  -- Emerald keep MAPSEC names in their own table, FireRed/LeafGreen in
+  -- map_sections_extract
+  local areaNames = {}
+  local function areaName(sec)
+    local n = areaNames[sec]
+    if n then return n end
+    local okR, Mapsec = pcall(require, "src.ui.game3.rse.mapsec")
+    local okN, name = false, nil
+    if okR and Mapsec and Mapsec.name then okN, name = pcall(Mapsec.name, sec) end
+    if not (okN and type(name) == "string" and name ~= "") then
+      local okS, Sections = pcall(require, "src.import.gba.map_sections_extract")
+      local okI, info = false, nil
+      if okS and Sections and Sections.getInfo then okI, info = pcall(Sections.getInfo, sec, nil, 0) end
+      name = okI and type(info) == "table" and info.resolved and (info.rawName or info.name) or nil
+    end
+    if type(name) == "string" then name = name:gsub("[%c]", " "):gsub("%s+", " "):match("^%s*(.-)%s*$") end
+    n = (type(name) == "string" and name ~= "" and name ~= "???") and name or ("AREA " .. tostring(sec))
+    areaNames[sec] = n
+    return n
+  end
+
+  -- the first species of an evolution line, for the dupes clause
+  local parentOf
+  local function baseOf(sp)
+    sp = tonumber(sp)
+    if not sp then return sp end
+    if not parentOf then
+      parentOf = {}
+      local Pokemon = engine("pokemon")
+      if Pokemon and Pokemon.evolutions then
+        Pokemon.evolutions(1)
+        for from, rows in pairs(Pokemon._evolutions or {}) do
+          for _, evo in ipairs(rows) do
+            local to = tonumber(evo.target or evo[3])
+            if to and to ~= from and not parentOf[to] then parentOf[to] = tonumber(from) end
+          end
+        end
+      end
+    end
+    local seen = 0
+    while parentOf[sp] and seen < 4 do sp, seen = parentOf[sp], seen + 1 end
+    return sp
+  end
+
+  local SL_OPTIONS = { dupes = "sl_dupes", shiny = "sl_shiny", gift = "sl_gift",
+                       static = "sl_static", enforce = "sl_enforce", hard = "sl_hard",
+                       caps = "sl_caps" }
+  local tracker = Tracker.new({
+    SL = SoulLink, now = clock, toast = toast, session = gameSession,
+    read = function(key) return mod.storage:read(game, key) end,
+    write = function(key, value) return mod.storage:write(game, key, value) end,
+    areaOf = function()
+      local Pokemon = engine("pokemon")
+      return Pokemon and Pokemon.currentMapSec and Pokemon.currentMapSec(gameSession())
+    end,
+    areaName = areaName, baseOf = baseOf,
+    speciesName = function(sp)
+      local Pokemon = engine("pokemon")
+      local ok, n = pcall(Pokemon.name, tonumber(sp))
+      return ok and n or ("#" .. tostring(sp))
+    end,
+    isShiny = function(mon) local P = engine("pokemon") return P and P.isShiny(mon) or false end,
+    isEgg = function(mon) local P = engine("pokemon") return P and P.isEgg(mon) or false end,
+    options = function()
+      local o = { on = mod.options:get("soullink") == true }
+      for k, key in pairs(SL_OPTIONS) do o[k] = mod.options:get(key) == true end
+      return o
+    end,
+    newId = function()
+      local r = love and love.math and love.math.random or math.random
+      return ("%x%06x"):format(os.time(), r(0, 0xffffff))
+    end,
+    send = function(fields)
+      if session and session.state == "connected" then session:sendSoulLink(fields) end
+    end,
+    -- hard rules: banned POKeMON go from the party to the PC
+    storage = {
+      openSlot = function(s)
+        local Storage = engine("storage")
+        return Storage.findOpenSlot(Storage.ensure(s))
+      end,
+      move = function(s, partyIndex, box, slot)
+        local Storage = engine("storage")
+        return Storage.moveMon(s, "party", partyIndex, "box", slot, nil, box) == true
+      end,
+    },
+  })
+  local slPanel = false
+  -- the overlay (lib/hud.lua), made on the first frame; panelMax: how far
+  -- the Soul Link panel can scroll
+  local hud, panelMax = nil, 0
+  -- START > CO-OP: picked from the start menu, opened once the field is
+  -- free (coopMenu is defined with the menu, below)
+  local menuPending, coopMenu = false, nil
+  local slConnected = nil
+  -- ROM texts swapped for a refused ball's message (see the bag wrap
+  -- below), put back on the next tick
+  local overridden = nil
+  local function restoreText()
+    if not overridden then return end
+    local RomText = engine("rom_text")
+    for k, v in pairs(overridden) do
+      if v == false then RomText.overrides[k] = nil else RomText.overrides[k] = v end
+    end
+    overridden = nil
+  end
+
+  -- ----------------------------------------------------------- level caps
+
+  -- the cap now (lib/levelcap.lua compute), worked out every 2 seconds
+  local capState, capAt, capToldFor = nil, -1, false
+  local CAP_SECONDS = 2
+  local aceOf = {}
+
+  local function capsOn()
+    return tracker.run ~= nil and mod.options:get("soullink") == true and tracker:rules().caps == true
+  end
+
+  local function computeCap()
+    local s = gameSession()
+    local Space = engine("scripting.space")
+    if not (s and Space and Space.store) then return nil end
+    local Constants = require("src.core.game3.constants")
+    local Flags = require("src.core.game3.scripting.flags")
+    local Trainers = require("src.core.game3.scripting.trainers")
+    local version = Constants.versionOf(s)
+    local C = Constants.of(version)
+    local ctx = Space.vm and Space.vm.ctx
+    return LevelCap.compute(LevelCap.listFor(version),
+      function(name)
+        local ok, id = pcall(C.id, C, "trainers", name)
+        return ok and tonumber(id) or nil
+      end,
+      function(id)
+        local ok, v = pcall(Flags.getFlag, Space.store, ctx, Flags.trainerFlagId(id))
+        return ok and v == true
+      end,
+      function(id)
+        if aceOf[id] == nil then
+          local ok, t = pcall(Trainers.get, id)
+          local top = false
+          for _, m in ipairs(ok and t and t.party or {}) do
+            local lv = tonumber(m.level or m.lvl)
+            if lv and (not top or lv > top) then top = lv end
+          end
+          aceOf[id] = top
+        end
+        return aceOf[id] or nil
+      end)
+  end
+
+  local function stepCaps()
+    if not capsOn() then
+      capState, capToldFor = nil, false
+      return
+    end
+    local now = clock()
+    if now < capAt then return end
+    capAt = now + CAP_SECONDS
+    local ok, st = pcall(computeCap)
+    if not ok then
+      mod.log:warn("level caps: %s", tostring(st))
+      return
+    end
+    capState = st
+    local key = st and (st.cap and (st.cap .. " " .. tostring(st.label)) or "none")
+    if key and key ~= capToldFor then
+      if capToldFor and st.cap and capToldFor:match("^(%d+) ") == tostring(st.cap) then
+        toast(("Soul Link: next big fight is %s. The level cap stays %d."):format(st.label, st.cap), 6)
+      elseif capToldFor and st.cap then
+        toast(("Soul Link: level cap is now %d (%s)."):format(st.cap, st.label), 6)
+      elseif capToldFor then
+        toast("Soul Link: no more level caps. The League is beaten!", 6)
+      elseif st.cap then
+        toast(("Soul Link: level cap %d (%s)."):format(st.cap, st.label), 5)
+      end
+      capToldFor = key
+    end
+  end
+
+  local function capNow()
+    return capsOn() and capState and capState.cap or nil
+  end
+
+  local function dropSession()
+    tracker:onDisconnected()
+    slConnected = nil
+    npcs:release()
+    npcs:forget()
+    if requests then requests:reset() end
+    requests = nil
+    -- a battle or trade in progress sees its channel fail and winds down
+    -- through the engine (draw / aborted trade); it keeps being stepped
+    if activity then activity:abort("partner_left") end
+    session = nil
+  end
+
+  local function disconnect(reason)
+    if session then session:close(reason or "left") end
+    dropSession()
+  end
+
+  local function partyCount()
+    local Runtime = engine("runtime")
+    local s = Runtime and Runtime.getSession and Runtime.getSession()
+    local n = 0
+    for _, mon in ipairs(s and s.party or {}) do
+      if (tonumber(mon.species) or 0) ~= 0 then n = n + 1 end
+    end
+    return n
+  end
+
+  -- whether this game can take part in act right now: the same checks the
+  -- Union Room makes before it offers a battle, and the Trade Center's
+  -- two-POKeMON rule
+  local function eligible(act)
+    if act == "battle" then
+      local LB, Link = engine("link.battle"), engine("link")
+      if not (LB and Link) then return false, "error" end
+      return LB.validateParty(nil, Link.USING.SINGLE_BATTLE, { unionRoom = true })
+    end
+    if partyCount() < 2 then return false, "no_mons" end
+    return true
+  end
+
+  local function fieldFree()
+    if not (game and game.phase == "field") or activity then return false end
+    local Hud, Player, Field = uiModule("hud"), engine("player"), engine("field")
+    if Hud and Hud.busy and Hud.busy() then return false end
+    if Player and Player.moving then return false end
+    if Field and Field.isLocked and Field.isLocked() then return false end
+    return true
+  end
+
+  local RESULT_TEXT = { win = "You won the battle!", lose = "You lost the battle.",
+                        draw = "The battle ended in a draw." }
+  local WHY_TEXT = {
+    peer_left = "partner left", partner_left = "partner left", link_timeout = "no reply",
+    setup_timeout = "no reply", engine_release_mismatch = "different engine release",
+    engine_mismatch = "different engine", fingerprint_mismatch = "different game data",
+    rules_mismatch = "different battle rules", cache_version_mismatch = "different game data",
+    native_version_mismatch = "different engine",
+  }
+
+  local function startActivity(act, id)
+    local s = session
+    local ch = s:openChannel(id)
+    s:setBusy(act)
+    local mine
+    mine = Activity.new({
+      kind = act, seat = s.role == "host" and 0 or 1, channel = ch, game = game,
+      now = clock, E = activityEngine(),
+      onEnd = function(result, why)
+        if activity == mine then activity = nil end
+        if session == s then
+          s:closeChannel(id)
+          s:setBusy("none")
+        end
+        if requests then requests:finished() end
+        if result == nil then
+          toast("Couldn't " .. act .. ": " .. tostring(WHY_TEXT[why] or why))
+        elseif act == "battle" then
+          toast(RESULT_TEXT[result] or ("Battle over (" .. tostring(result) .. ")."))
+        elseif result == 1 then
+          toast("Traded 1 POKeMON.")
+        elseif result > 1 then
+          toast(("Traded %d POKeMON."):format(result))
+        else
+          toast("Left the trade.")
+        end
+      end,
+    })
+    activity = mine
+    mine:start()
+  end
+
+  local function wave()
+    if not session then return end
+    session:emote("wave")
+    toast("You waved at " .. tostring(session.peer and session.peer.name or "your partner"))
+  end
+
+  -- the game's own message box and choice menu, which the HUD drives in
+  -- the field (src/ui/game3/hud.lua)
+  local ui = {}
+  local waitCancel
+  function ui.close()
+    local Message, Choice = uiModule("message"), uiModule("choice")
+    waitCancel = nil
+    if Choice and Choice.active then Choice.reset() end
+    if Message and Message.isOpen() then Message.close() end
+  end
+  function ui.menu(text, labels, cb)
+    local Message, Choice = uiModule("message"), uiModule("choice")
+    Message.show(text, { stay = true })
+    Choice.multi(labels, 0, function(index)
+      if Message.isOpen() then Message.close() end
+      -- B comes back as 127
+      cb(index ~= 127 and index or nil)
+    end)
+  end
+  function ui.ask(text, cb)
+    uiModule("message").show(text, { stay = true })
+    uiModule("choice").yesNo(cb)
+  end
+  -- only B cancels: A is the habit for "next" on a message box, and
+  -- would call off a request the partner is about to accept
+  function ui.wait(text, onCancel)
+    uiModule("message").show(text, { stay = true })
+    waitCancel = onCancel
+  end
+  ui.toast = function(text) toast(text) end
+
+  newRequests = function(role)
+    return Requests.new({
+      session = function() return session end, now = clock,
+      firstId = role == "host" and 1 or 2, ui = ui,
+      canPrompt = fieldFree, eligible = eligible, wave = wave, start = startActivity,
+    })
+  end
+
+  -- role: "host"/"join" from the CO-OP menu, else the launcher setting
+  local function connect(g, role)
+    disconnect()
+    if not Net.available() then
+      status = "CO-OP: needs LOVE's ENet (not available here)"
+      return
+    end
+    local net = Net.new()
+    role = role or mod.options:get("role")
+    local port = math.floor(tonumber(mod.options:get("port")) or Net.defaultPort())
+    local address = tostring(mod.options:get("address") or ""):match("^%s*(.-)%s*$")
+    local ok, sameMachine
+    local loopback = address:match("^localhost") ~= nil or address:match("^127%.") ~= nil
+    local localPort = tonumber(address:match(":(%d+)$")) or port
+    if role == "join" and loopback and net:host(localPort) then
+      -- joining this same computer, and the port was free: nobody here is
+      -- hosting yet (both copies read one settings file, so both say JOIN).
+      -- Be the host; the other copy's join then finds us.
+      ok, role, sameMachine = true, "host", "hosting"
+    elseif role == "join" then
+      if loopback then net = Net.new() end
+      -- the host's status line shows "ip:port"; accept it pasted whole
+      -- rather than appending a second port
+      ok = net:join(address:match("^.-:%d+$") and address or ("%s:%d"):format(address, port))
+    else
+      ok = net:host(port)
+      -- two copies on one computer share the launcher's settings, so both
+      -- start as HOST and the second finds the port taken.  The copy
+      -- already holding it is the host it wants; join that instead.
+      if not ok and tostring(net.error):find("can't open UDP port", 1, true) then
+        local hostError = net.error
+        net = Net.new()
+        ok = net:join(("127.0.0.1:%d"):format(port))
+        if ok then
+          role, sameMachine = "join", true
+        else
+          net.error = hostError
+        end
+      end
+    end
+    if not ok then
+      status = "CO-OP: " .. tostring(net.error):gsub("%s+", " ")
+      return
+    end
+    local link = Handshake.hello(g)
+    local hello = Protocol.hello(link.name, GameVersion.get(), link, modsKey(g))
+    session = Session.new(net, role, hello,
+      { Protocol = Protocol, Presence = Presence, Ghost = Ghost, Channel = Channel,
+        compat = compat, offsetOf = offsetOf })
+    session.sameMachine = sameMachine
+    requests = newRequests(role)
+    status = nil
+  end
+
+  local function snapshot(g)
+    if g.phase ~= "field" then return nil end
+    local Player = engine("player")
+    local Map = engine("map")
+    if not (Player and Map and Map.current) then return nil end
+    local OwSprites = engine("ow_sprites")
+    local gfx = OwSprites and OwSprites.playerGraphicsId and OwSprites.playerGraphicsId(g) or 0
+    return Presence.sample(Player, Map.current, gfx, Player.isVisible and Player.isVisible())
+  end
+
+  local STEP = { up = { 0, -1 }, down = { 0, 1 }, left = { -1, 0 }, right = { 1, 0 } }
+
+  -- A while standing still and facing the partner opens the talk menu.  The
+  -- field sees the same press first; if it opened anything (a sign, a menu),
+  -- Hud.busy() is true by now and the menu stands down.
+  local function tryTalk(g)
+    local input = g.input
+    if not (input and input.wasPressed and input:wasPressed("a")) then return end
+    local Player = engine("player")
+    if not Player or Player.moving then return end
+    local Hud = uiModule("hud")
+    if Hud and Hud.busy and Hud.busy() then return end
+    local d = STEP[Player.facing]
+    local gx, gy = session.ghost:screenCell(offsetOf)
+    if not (d and gx) then return end
+    if Player.cellX + d[1] ~= gx or Player.cellY + d[2] ~= gy then return end
+    if activity or not requests then return end
+    local now = clock()
+    if now - lastWaveAt < 0.5 then return end
+    lastWaveAt = now
+    requests:talk()
+  end
+
+  local function npcsCanMove()
+    local Space, Field, Hud = engine("scripting.space"), engine("field"), uiModule("hud")
+    if Space and Space.vm and Space.vm.isRunning and Space.vm:isRunning() then return false end
+    if Field and Field.isLocked and Field.isLocked() then return false end
+    if Hud and Hud.busy and Hud.busy() then return false end
+    return true
+  end
+
+  local function localPlayerAt(x, y)
+    local P = engine("player")
+    if not P then return false end
+    if P.cellX == x and P.cellY == y then return true end
+    return P.moving == true and P.targetX == x and P.targetY == y
+  end
+
+  -- While both players are on the same map the host's wandering NPCs lead
+  -- and the joiner's follow; anywhere else each game moves its own.
+  local function syncNpcs()
+    local O, Map = engine("objects"), engine("map")
+    if not (O and O._byId and Map and Map.current) then return end
+    local ghost = session.ghost
+    local together = ghost.known and ghost.map == Map.current and not activity
+    if session.role == "host" then
+      if together then
+        local list = npcs:collect(O, Map.current)
+        if #list > 0 then session:sendNpcs(Map.current, list) end
+      else
+        npcs:forget()
+      end
+    else
+      for _, msg in ipairs(session:takeNpcs()) do
+        if together and msg.m == Map.current then npcs:receive(O, msg) end
+      end
+      npcs:update(O, Map.current, npcsCanMove, localPlayerAt)
+    end
+  end
+
+  local function stepActivity()
+    if not activity then return end
+    local current = activity
+    local ok, err = pcall(current.step, current)
+    if not ok then
+      mod.log:warn("activity failed: %s", tostring(err))
+      pcall(current._end, current, nil, "error")
+      if activity == current then activity = nil end
+    end
+  end
+
+  -- AUTOCONNECT waits for the overworld: at the title screen no save is
+  -- loaded yet, so the hello would carry no trainer name ("PLAYER")
+  local autoPending = false
+
+  local function tick(g)
+    if autoPending and g.phase == "field" then
+      autoPending = false
+      if not session then connect(g) end
+    end
+    stepActivity()
+    pcall(tracker.tick, tracker, g.phase == "field", activity ~= nil,
+      g.phase == "field" and not activity and npcsCanMove())
+    stepCaps()
+    restoreText()
+    if menuPending and fieldFree() then
+      menuPending = false
+      coopMenu(g)
+    end
+    if not session and retryAt and clock() >= retryAt then
+      retryAt = nil
+      local keep = status
+      connect(g)
+      -- a joiner whose host isn't back yet fails at once; keep saying so
+      if not session then
+        status, retryAt = keep, clock() + RETRY_SECONDS
+      end
+    end
+    if not session then return end
+    session:tick(snapshot(g))
+    if session.state == "refused" or session.state == "closed" then
+      local why = session.reason
+      if session.sameMachine == true and why == "network_error" then
+        -- the port was taken but nothing answered on it: a dead socket,
+        -- usually an older game process still holding it
+        status = ("CO-OP: port %s is held by an old game process - quit the game fully, or change PORT")
+          :format(tostring(session.net.target):match(":(%d+)$") or "?")
+      elseif RETRY_REASONS[why] and (session.peer or mod.options:get("autoconnect")) then
+        status = "CO-OP: " .. (REASONS[why] or tostring(why)) .. " - reconnecting (F8 stops)"
+        retryAt = clock() + RETRY_SECONDS
+      else
+        status = "CO-OP: " .. (REASONS[why] or tostring(why))
+          .. (session.netError and (" (" .. tostring(session.netError):gsub("%s+", " ") .. ")") or "")
+          .. " - F8 to retry"
+      end
+      dropSession()
+      return
+    end
+    if session.state ~= "connected" then return end
+    if slConnected ~= session then
+      slConnected = session
+      tracker:onConnected()
+    end
+    for _, msg in ipairs(session:takeSoulLink()) do
+      tracker:onMessage(msg, session.role == "host")
+    end
+    if waitCancel and g.input and g.input.wasPressed and g.input:wasPressed("b") then
+      local cancel = waitCancel
+      waitCancel = nil
+      cancel()
+    end
+    requests:tick()
+    if session.emotes ~= seenEmotes then
+      seenEmotes = session.emotes
+      if session.lastEmote == "wave" then
+        toast(tostring(session.peer and session.peer.name or "Partner") .. " waved at you!")
+      end
+    end
+    if g.phase == "field" then
+      syncNpcs()
+      tryTalk(g)
+    end
+  end
+
+  -- Close the socket before the game goes away.  On Linux, returning to
+  -- the launcher execv()s the process in place, and an open UDP socket
+  -- survives that: the new launcher (and every game it starts) silently
+  -- inherits port 7777 and never answers on it.  Every exit route
+  -- (window close, quit to launcher, relaunch) runs SessionLifecycle's
+  -- game:reset(), so close there; core.quit_to_launcher covers window close
+  -- even if reset is skipped.  The reset wrap is installed once per process
+  -- and calls whichever load of this mod is current, so reloads don't stack.
+  local Game3 = require("src.core.Game3")
+  if not Game3._g3coopReset then
+    Game3._g3coopReset = Game3.reset
+    Game3.reset = function(self, ...)
+      local teardown = Game3._g3coopTeardown
+      if teardown then pcall(teardown) end
+      return Game3._g3coopReset(self, ...)
+    end
+  end
+  Game3._g3coopTeardown = function()
+    retryAt = nil
+    npcs:release()
+    disconnect("left")
+    -- the engine resets its link modules along with the game
+    if activity then pcall(activity._end, activity, nil, "reset") end
+    activity = nil
+  end
+
+  -- The partner is appended to the list Objects.forDraw hands the field
+  -- renderer.  The virtual-object layer the Union Room uses would cull a
+  -- partner standing on a connected map (it only draws inside the active
+  -- map), so the entry is added here instead, in the same shape.  Installed
+  -- once per process, calling whichever load of this mod is current.
+  local drawRec = {}
+  local function partnerDrawEntry()
+    if not (session and session.state == "connected" and game and game.phase == "field") then
+      return nil
+    end
+    return session.ghost:drawInto(drawRec, offsetOf, GfxIds.spriteFor)
+  end
+  local Objects = require("src.core.game3.objects")
+  if not Objects._g3coopForDraw then
+    Objects._g3coopForDraw = Objects.forDraw
+    Objects.forDraw = function(...)
+      local list = Objects._g3coopForDraw(...)
+      local extra = Objects._g3coopExtra
+      if extra and type(list) == "table" then
+        local ok, rec = pcall(extra)
+        if ok and rec then list[#list + 1] = rec end
+      end
+      return list
+    end
+  end
+  Objects._g3coopExtra = partnerDrawEntry
+
+  -- NPCs walk around the partner as they walk around the player, so the
+  -- host's NPCs never step onto the joiner (whose copies follow them).
+  -- Objects.playerBlocks is the check the engine's idle mover makes.
+  local function partnerAt(tx, ty)
+    if not (session and session.state == "connected" and game and game.phase == "field") then return false end
+    local ghost = session.ghost
+    local ox, oy = offsetOf(ghost.map)
+    if not (ghost.known and ghost.visible and ox) then return false end
+    if ghost.cellX + ox == tx and ghost.cellY + oy == ty then return true end
+    return ghost.moving and ghost.targetX + ox == tx and ghost.targetY + oy == ty
+  end
+  if not Objects._g3coopPlayerBlocks then
+    Objects._g3coopPlayerBlocks = Objects.playerBlocks
+    Objects.playerBlocks = function(tx, ty, ...)
+      local extra = Objects._g3coopBlocks
+      if extra then
+        local ok, hit = pcall(extra, tx, ty)
+        if ok and hit then return true end
+      end
+      return Objects._g3coopPlayerBlocks(tx, ty, ...)
+    end
+  end
+  Objects._g3coopBlocks = partnerAt
+
+  -- The surf blob under a surfing partner.  FieldEffects.drawBehind draws
+  -- it for the local player only (the layer under the actors), so the
+  -- partner's is drawn right after it with the same sheet and frames
+  -- (pokeemerald field_effect_objects.h:203).  Installed once per process.
+  local BLOB_ANIM = { down = 1, up = 2, left = 3, right = 4 }
+  local BLOB_STEP = { down = 0, up = 2, left = 4, right = 4 }
+  local function drawPartnerBlob(camX, camY)
+    if not (session and session.state == "connected" and game and game.phase == "field") then return end
+    local px, py, facing = session.ghost:surfBlob(offsetOf)
+    if not px then return end
+    local FieldEffects = engine("field_effects")
+    local sheet = FieldEffects and FieldEffects.loadSheet and FieldEffects.loadSheet("surf_blob", 32, 32, 6)
+    if not sheet then return end
+    local frameIdx, flip = BLOB_STEP[facing] or 0, facing == "right"
+    local blob = sheet.frames < 6 and FieldEffects.manifestObject and FieldEffects.manifestObject("surf_blob")
+    if blob and blob.anims then
+      local seq = blob.anims[BLOB_ANIM[facing] or 1]
+      local cmd = seq and seq[1]
+      frameIdx, flip = cmd and cmd[2] or 0, cmd and cmd[4] == true or false
+    end
+    local q = sheet.quads[frameIdx]
+    if not q then return end
+    local sx, sy = px - (camX or 0) - 8, py - (camY or 0) - 8
+    love.graphics.setColor(1, 1, 1, 1)
+    if flip then
+      love.graphics.draw(sheet.image, q, sx + 32, sy, 0, -1, 1)
+    else
+      love.graphics.draw(sheet.image, q, sx, sy)
+    end
+  end
+  local FieldEffects = engine("field_effects")
+  if FieldEffects and FieldEffects.drawBehind and not FieldEffects._g3coopDrawBehind then
+    FieldEffects._g3coopDrawBehind = FieldEffects.drawBehind
+    FieldEffects.drawBehind = function(camX, camY, ...)
+      local r = FieldEffects._g3coopDrawBehind(camX, camY, ...)
+      local extra = FieldEffects._g3coopExtra
+      if extra then pcall(extra, camX, camY) end
+      return r
+    end
+  end
+  if FieldEffects then FieldEffects._g3coopExtra = drawPartnerBlob end
+
+  mod.hooks:wrap("core.quit_to_launcher", function(next)
+    disconnect("left")
+    return next()
+  end)
+
+  local hinted = false
+  mod.events:on("game.ready", function(ev)
+    game = ev and ev.game
+    if game and mod.options:get("autoconnect") and not session then autoPending = true end
+    if game and not session and not autoPending and not hinted then
+      hinted = true
+      toast("Co-op: START > CO-OP to host or join.", 6)
+    end
+  end)
+
+  mod.hooks:wrap("input.step", function(next, g, dt)
+    next(g, dt)
+    game = g
+    local ok, err = pcall(tick, g)
+    if not ok then
+      mod.log:warn("tick failed: %s", tostring(err))
+      disconnect("error")
+      status = "CO-OP: error, see log - F8 to retry"
+    end
+  end)
+
+  -- While the Soul Link panel is open it takes the keys and buttons: up
+  -- and down scroll, F7 / B / Esc close.  Releases still reach the game,
+  -- so a direction held when it opened doesn't stick.
+  local PANEL_CLOSE = { escape = true, x = true, z = true, backspace = true, ["return"] = true }
+  local PANEL_SCROLL = { up = -1, down = 1, pageup = -5, pagedown = 5 }
+  local PAD_SCROLL = { dpup = -1, dpdown = 1, leftshoulder = -5, rightshoulder = 5 }
+  local PAD_CLOSE = { a = true, b = true, start = true, back = true }
+  local function scrollPanel(by)
+    if hud then hud.scroll = math.max(0, math.min((hud.scroll or 0) + by, panelMax or 0)) end
+  end
+  local function openPanel(open)
+    slPanel = open
+    if hud then hud.scroll = 0 end
+  end
+
+  mod.hooks:wrap("input.key", function(next, g, ev)
+    if ev and ev.phase == "pressed" and ev.key == "f7" then
+      openPanel(not slPanel)
+      return true
+    end
+    if slPanel and ev and ev.phase == "pressed" and ev.key ~= "f8" then
+      if PANEL_SCROLL[ev.key] then scrollPanel(PANEL_SCROLL[ev.key])
+      elseif PANEL_CLOSE[ev.key] then openPanel(false) end
+      return true
+    end
+    if ev and ev.phase == "pressed" and ev.key == "f8" then
+      if retryAt and not session then
+        retryAt = nil
+        status = "CO-OP: stopped reconnecting - F8 to connect"
+        return true
+      end
+      retryAt = nil
+      if session then
+        -- "stopped", not "left": the partner shouldn't keep redialing
+        disconnect("stopped")
+        status = "CO-OP: disconnected - F8 to connect"
+      else
+        connect(g or game)
+      end
+      return true
+    end
+    return next(g, ev)
+  end)
+
+  mod.hooks:wrap("input.gamepad", function(next, g, ev)
+    if slPanel and ev and ev.phase == "pressed" then
+      if PAD_SCROLL[ev.button] then scrollPanel(PAD_SCROLL[ev.button])
+      elseif PAD_CLOSE[ev.button] then openPanel(false) end
+      return true
+    end
+    return next(g, ev)
+  end)
+
+  mod.hooks:wrap("input.wheel", function(next, g, dy)
+    if slPanel then
+      scrollPanel((tonumber(dy) or 0) > 0 and -1 or 1)
+      return true
+    end
+    return next(g, dy)
+  end)
+
+  -- ------------------------------------------------------- START > CO-OP
+
+  coopMenu = function(g)
+    local addr = tostring(mod.options:get("address") or ""):match("^%s*(.-)%s*$")
+    local port = math.floor(tonumber(mod.options:get("port")) or Net.defaultPort())
+    if not addr:match(":%d+$") then addr = addr .. ":" .. port end
+    local s = session
+    if s and s.state == "connected" then
+      local name = tostring(s.peer and s.peer.name or "your partner")
+      ui.menu("Playing with " .. name .. ".", { "LEAVE", "SOUL LINK", "CANCEL" }, function(i)
+        if i == 0 then
+          ui.ask("Stop playing with " .. name .. "?", function(yes)
+            if yes then
+              retryAt = nil
+              disconnect("stopped")
+              status = "CO-OP: disconnected"
+            end
+          end)
+        elseif i == 1 then
+          openPanel(true)
+        end
+      end)
+    elseif s or retryAt then
+      local what = (s and s.role == "host" and s.state == "waiting") and "Waiting for your partner."
+        or "Connecting..."
+      ui.menu(what, { "STOP", "SOUL LINK", "CANCEL" }, function(i)
+        if i == 0 then
+          retryAt = nil
+          disconnect("left")
+          status = nil
+        elseif i == 1 then
+          openPanel(true)
+        end
+      end)
+    else
+      ui.menu("HOST a game here, or JOIN\n" .. addr .. "?", { "HOST", "JOIN", "SOUL LINK", "CANCEL" },
+        function(i)
+          if i == 0 or i == 1 then
+            retryAt = nil
+            connect(g or game, i == 0 and "host" or "join")
+          elseif i == 2 then
+            openPanel(true)
+          end
+        end)
+    end
+  end
+
+  mod.hooks:wrap("ui.start_menu.items", function(next, g, items)
+    local out = next(g, items)
+    if type(out) ~= "table" then return out end
+    local copy, at = {}, nil
+    for i, e in ipairs(out) do
+      copy[i] = e
+      if type(e) == "table" and e.id == "save" and not at then at = i end
+    end
+    table.insert(copy, at or math.max(1, #copy), {
+      id = "g3_coop", label = "CO-OP",
+      onSelect = function()
+        local StartMenu = uiModule("start_menu")
+        if StartMenu and StartMenu.close then StartMenu.close(true) end
+        -- opened from the field on the next free tick, once the start
+        -- menu's window is gone
+        menuPending = true
+      end,
+    })
+    return copy
+  end)
+
+  -- Scripted wild battles (legendaries, Kecleon, Voltorb...) come in
+  -- through the script adapter's startWildBattle, which always passes a
+  -- done callback; grass, water, fishing and rock smash call startWild
+  -- without one.  That is how Soul Link tells a static from a wild.
+  local Bridge = engine("battle_bridge")
+  if Bridge and Bridge.startWild and not Bridge._g3coopStartWild then
+    Bridge._g3coopStartWild = Bridge.startWild
+    Bridge.startWild = function(m, g, enc, opts)
+      Bridge._g3coopHow = (type(opts) == "table" and opts.done) and "static" or "wild"
+      return Bridge._g3coopStartWild(m, g, enc, opts)
+    end
+  end
+
+  mod.events:on("battle.started", function(ev)
+    if session then session:setBusy("battle") end
+    local how = Bridge and Bridge._g3coopHow or "wild"
+    if Bridge then Bridge._g3coopHow = nil end
+    -- a co-op link battle is never an encounter
+    if activity then ev = { kind = "link" } end
+    local ok, err = pcall(tracker.onBattleStarted, tracker, ev, how)
+    if not ok then mod.log:warn("soul link: %s", tostring(err)) end
+  end)
+  mod.events:on("pokemon.caught", function(ev)
+    local ok, err = pcall(tracker.onCaught, tracker, ev)
+    if not ok then mod.log:warn("soul link: %s", tostring(err)) end
+  end)
+  mod.events:on("battle.fainted", function(ev)
+    local ok, err = pcall(tracker.onFainted, tracker, ev)
+    if not ok then mod.log:warn("soul link: %s", tostring(err)) end
+  end)
+  mod.events:on("battle.ended", function(ev)
+    if session then session:setBusy("none") end
+    local ok, err = pcall(tracker.onBattleEnded, tracker, ev)
+    if not ok then mod.log:warn("soul link: %s", tostring(err)) end
+  end)
+
+  -- Enforced catch limits.  The bag already refuses a ball when the party
+  -- and the boxes are full ("The BOX is full!"), before the ball is used
+  -- up; a ball Soul Link refuses goes down that same path with its own
+  -- words.  Safari Zone's BALL command checks the same function.  The
+  -- catch.rate hook is the backstop for any other way to throw one.
+  local BagMenu = uiModule("bag_menu")
+  local RomText = engine("rom_text")
+  local TextIR = engine("scripting.text_ir")
+  local BOX_FULL_KEYS = { "gOtherText_BoxIsFull", "gText_BoxFull" }
+  if BagMenu and BagMenu.partyAndStorageFull and not BagMenu._g3coopFull then
+    BagMenu._g3coopFull = BagMenu.partyAndStorageFull
+    BagMenu.partyAndStorageFull = function(...)
+      local extra = BagMenu._g3coopBlock
+      if extra then
+        local ok, text = pcall(extra)
+        if ok and text then return true end
+      end
+      return BagMenu._g3coopFull(...)
+    end
+  end
+  if BagMenu then
+    BagMenu._g3coopBlock = function()
+      local text = tracker:blockText()
+      if not text then return nil end
+      -- the message that follows reads one of these keys this frame
+      if RomText and TextIR and TextIR.fromAscii and not overridden then
+        overridden = {}
+        local ir = TextIR.fromAscii(text)
+        for _, k in ipairs(BOX_FULL_KEYS) do
+          local cur = RomText.overrides[k]
+          overridden[k] = cur == nil and false or cur
+          RomText.overrides[k] = ir
+        end
+      end
+      return text
+    end
+  end
+  local BattleText = engine("battle.battle_text")
+  if BattleText and BattleText.get and not BattleText._g3coopGet then
+    BattleText._g3coopGet = BattleText.get
+    BattleText.get = function(id, ...)
+      local extra = BattleText._g3coopText
+      if id == "STRINGID_BOXISFULL" and extra then
+        local ok, text = pcall(extra)
+        if ok and text then return text end
+      end
+      return BattleText._g3coopGet(id, ...)
+    end
+  end
+  if BattleText then BattleText._g3coopText = function() return tracker:blockText() end end
+  mod.hooks:wrap("catch.rate", function(next, ...)
+    if tracker:blockText() then return false, 0 end
+    return next(...)
+  end)
+
+  -- Hard rules: the dead stay dead.  Every revive (REVIVE, MAX REVIVE,
+  -- REVIVAL HERB, SACRED ASH; in battle and out) goes through
+  -- ItemUse.revive, and a refusal reads "It won't have any effect."
+  local ItemUse = engine("item_use")
+  if ItemUse and ItemUse.revive and not ItemUse._g3coopRevive then
+    ItemUse._g3coopRevive = ItemUse.revive
+    ItemUse.revive = function(mon, ...)
+      local extra = ItemUse._g3coopBanned
+      if extra then
+        local ok, banned = pcall(extra, mon)
+        if ok and banned then return false, 0 end
+      end
+      return ItemUse._g3coopRevive(mon, ...)
+    end
+  end
+  if ItemUse then ItemUse._g3coopBanned = function(mon) return tracker:isBanned(mon) end end
+
+  -- Level caps: battle EXP stops at the cap (a POKeMON below it may still
+  -- reach it), and a RARE CANDY won't take it past.
+  mod.hooks:wrap("exp.gain", function(next, info)
+    local amount = next(info)
+    local cap = capNow()
+    local mon = type(info) == "table" and info.mon
+    if not (cap and mon) then return amount end
+    local Exp = engine("battle.experience")
+    if not (Exp and Exp.expForLevel) then return amount end
+    return LevelCap.clampExp(mon.level, mon.exp, tonumber(amount) or 0, cap,
+      function(level) return Exp.expForLevel(mon, level) end)
+  end)
+  if ItemUse and ItemUse.useRareCandy and not ItemUse._g3coopRareCandy then
+    ItemUse._g3coopRareCandy = ItemUse.useRareCandy
+    ItemUse.useRareCandy = function(session_, mon, ...)
+      local extra = ItemUse._g3coopCandyText
+      if extra then
+        local ok, text = pcall(extra, mon)
+        if ok and text then return false, "no_effect", text end
+      end
+      return ItemUse._g3coopRareCandy(session_, mon, ...)
+    end
+  end
+  if ItemUse then
+    ItemUse._g3coopCandyText = function(mon)
+      local cap = capNow()
+      if not (cap and type(mon) == "table" and (tonumber(mon.level) or 1) >= cap) then return nil end
+      toast(("Soul Link: level cap %d (%s)."):format(cap, tostring(capState.label)), 4)
+      return RomText and RomText.box and (RomText.box("gText_WontHaveEffect")) or nil
+    end
+  end
+
+  local function statusLine()
+    if not session then return status end
+    local s = session
+    if s.state == "waiting" then
+      if s.sameMachine == "hosting" then
+        return "CO-OP: hosting on this PC (" .. tostring(s.net.address) .. ") - waiting"
+      elseif s.sameMachine then
+        return "CO-OP: port in use, joining this PC's host " .. tostring(s.net.target) .. "..."
+      end
+      if s.role == "join" then return "CO-OP: joining " .. tostring(s.net.target) .. "..." end
+      return "CO-OP: hosting on " .. tostring(s.net.address) .. " - waiting"
+    elseif s.state == "handshake" then
+      return "CO-OP: checking versions..."
+    end
+    local line = "CO-OP: " .. tostring(s.peer and s.peer.name or "partner")
+    local Map = engine("map")
+    local ghost = s.ghost
+    if ghost.known and Map and ghost.map ~= Map.current and not offsetOf(ghost.map) then
+      line = line .. " @ " .. tostring(ghost.map)
+    end
+    if activity then
+      line = line .. (activity.kind == "battle" and " - battle" or " - trade")
+    elseif s.peerBusy == "battle" then
+      line = line .. " (battling)"
+    elseif s.peerBusy == "trade" then
+      line = line .. " (trading)"
+    end
+    if s:stale() then line = line .. " (no signal)" end
+    return line
+  end
+
+  -- the area a map belongs to, by name (the partner card)
+  local function mapArea(mapId)
+    local maps = game and game.data and game.data.maps
+    local def = maps and mapId and maps[mapId]
+    local sec = type(def) == "table" and tonumber(def.regionMapSectionId)
+    return sec and areaName(sec) or nil
+  end
+
+  local function pingMs(s)
+    local peer = s.net and s.net.peer
+    if not (peer and peer.round_trip_time) then return nil end
+    local ok, rtt = pcall(peer.round_trip_time, peer)
+    return ok and tonumber(rtt) or nil
+  end
+
+  -- Soul Link's tally for the card, worked out twice a second
+  local slTally, slTallyAt = nil, -1
+  local function soulLinkLine()
+    local now = clock()
+    if now >= slTallyAt then
+      slTallyAt = now + 0.5
+      local ok, data = pcall(tracker.panel, tracker)
+      slTally = ok and data or nil
+    end
+    local d = slTally
+    if not d then return nil end
+    if d.over then return { "SOUL LINK: none left to battle", Hud.COLORS.bad } end
+    return { ("SOUL LINK: %d alive, %d gone  (F7)"):format(d.alive, d.gone), Hud.COLORS.sl }
+  end
+
+  local STATUS_SECONDS = 15
+  local cardStatus, cardStatusAt = nil, 0
+
+  -- What the partner card says (lib/hud.lua drawCard), or nil for none.
+  local function cardInfo()
+    local C = Hud.COLORS
+    local s = session
+    if not s then
+      if retryAt then
+        return { dot = "wait", title = "RECONNECTING", lines = { (tostring(status or ""):gsub("^CO%-OP: ", "")) } }
+      end
+      -- a status with nothing behind it (an error, "disconnected") stays
+      -- up for a while, then the card goes away
+      if status ~= cardStatus then cardStatus, cardStatusAt = status, clock() end
+      if status and clock() - cardStatusAt < STATUS_SECONDS then
+        return { dot = "off", title = "CO-OP", lines = { (tostring(status):gsub("^CO%-OP: ", "")) } }
+      end
+      return nil
+    end
+    if s.state == "waiting" then
+      if s.role == "join" then
+        local note = s.sameMachine and "This PC's host" or "Joining"
+        return { dot = "wait", title = "JOINING", lines = { note, { tostring(s.net.target), C.text } } }
+      end
+      return { dot = "wait", title = "HOSTING", lines = {
+        s.sameMachine and "On this PC. Your partner joins:" or "Your partner joins:",
+        { tostring(s.net.address), C.text }, "START > CO-OP to stop" } }
+    elseif s.state == "handshake" then
+      return { dot = "wait", title = "CONNECTING", lines = { "Checking versions..." } }
+    end
+    local card = { dot = s:stale() and "bad" or "ok",
+                   title = tostring(s.peer and s.peer.name or "PARTNER"), lines = {} }
+    local ms = pingMs(s)
+    if s:stale() then card.right = "no signal"
+    elseif ms then card.right = ("%d ms"):format(ms) end
+    local Map = engine("map")
+    local ghost = s.ghost
+    local where
+    if not ghost.known then where = "..."
+    elseif Map and ghost.map == Map.current then where = "Here with you"
+    elseif offsetOf(ghost.map) then where = "Just nearby"
+    else where = mapArea(ghost.map) or "Somewhere else" end
+    if activity then where = activity.kind == "battle" and "Battling you" or "Trading with you"
+    elseif s.peerBusy == "battle" then where = where .. ", in a battle"
+    elseif s.peerBusy == "trade" then where = where .. ", trading" end
+    card.lines[1] = where
+    card.lines[2] = soulLinkLine()
+    local cap = capNow()
+    if cap then card.lines[#card.lines + 1] = { ("LEVEL CAP %d: %s"):format(cap, capState.label), C.warn } end
+    return card
+  end
+
+  mod.hooks:wrap("render.hud", function(next, g, viewport)
+    next(g, viewport)
+    if not (love and love.graphics) then return end
+    hud = hud or Hud.new(love.graphics)
+    local now = clock()
+    for i = #toasts, 1, -1 do
+      if toasts[i].untilT < now then table.remove(toasts, i) end
+    end
+    if slPanel then
+      local data = tracker.run and tracker:panel() or nil
+      if data and capNow() then data.cap = { level = capState.cap, label = capState.label } end
+      local ok, max = pcall(hud.drawPanel, hud, viewport, data,
+        function(sp)
+          local P = engine("pokemon")
+          local okI, icon = pcall(P.icon, sp)
+          return okI and icon or nil
+        end)
+      if ok then panelMax = max or 0 else mod.log:warn("soul link panel: %s", tostring(max)) end
+      return
+    end
+    local y
+    -- the battle and trade screens use the whole screen; keep the toasts
+    if mod.options:get("hud") and not (activity and activity.stage ~= "link") then
+      local okC, card = pcall(cardInfo)
+      if okC and card then
+        local okD, below = pcall(hud.drawCard, hud, viewport, card)
+        if okD then y = below else mod.log:warn("co-op card: %s", tostring(below)) end
+      end
+    end
+    if #toasts > 0 then
+      local ok, err = pcall(hud.drawToasts, hud, viewport, toasts, y, now)
+      if not ok then mod.log:warn("co-op toasts: %s", tostring(err)) end
+    end
+  end)
+
+  mod.exports.status = statusLine
+  mod.exports.session = function() return session end
+  mod.exports.compat = compat
+  mod.exports.toasts = function() return toasts end
+  mod.exports.drawEntry = partnerDrawEntry
+  mod.exports.requests = function() return requests end
+  mod.exports.activity = function() return activity end
+  mod.exports.npcs = function() return npcs end
+  mod.exports.tracker = function() return tracker end
+  mod.exports.card = cardInfo
+  mod.exports.levelCap = function() stepCaps() return capNow(), capState end
+  mod.exports.menu = function(g) coopMenu(g) end
+end
