@@ -498,3 +498,14 @@ Not done, and why: EXP (engine, CODEX-REQUESTS.md 3), three-faint limit
 (engine, 4), wild doubles and catching (engine, 5), prize money (needs a
 split decision), a menu entry and trainer sight start (co-op side, next),
 disconnect pause/fallback (D4), mid-battle join (D5).
+
+### Decisions (user, 2026-10-21)
+
+- Prize money in a team battle: each player receives the full prize for
+  both trainers, as if they had won alone (no split).
+- Mandatory joint fights: when the partner isn't there to fight together
+  (including offline), the battle doesn't start. A text box says to wait for
+  the partner, and the player can cancel and walk away without the dialog
+  sticking on screen.
+- Disconnect mid team battle: pause and offer "continue alone" or "end the
+  battle" (a draw) right away. The engine can't resume a broken link battle.
