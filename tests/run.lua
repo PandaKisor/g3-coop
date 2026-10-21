@@ -242,6 +242,11 @@ do
   T.eq(Team.prize(E, {}, { { trainerId = 1 }, { trainerId = 2 } }), 350, "each player gets both trainers' prizes")
   T.eq(paid, 350, "paid in full")
   T.eq(Team.prize(E, {}, { { name = "" }, { name = "" } }), 0, "wild foes pay nothing")
+  local receipts = {}
+  T.eq(Team.settlePrize(E, {}, { 1, 2 }, receipts), 350, "a team win settles both prizes")
+  T.eq(Team.settlePrize(E, {}, { 2 }, receipts), 0, "a later joint credit for the same win pays nothing")
+  T.eq(#receipts, 2, "receipts for both")
+  T.eq(Team.settlePrize(E, {}, { 1, 1 }, {}), 100, "an id twice in one call pays once")
   local st = { coopTeam = true, eliminated = {}, coopSolo = true }
   T.eq(Team.onFainted({}, { battle = st, battlerId = 0 }), false, "no faint limit once alone")
 end

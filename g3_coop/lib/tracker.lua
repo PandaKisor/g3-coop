@@ -355,8 +355,15 @@ function Tracker:onFainted(ev)
   if not (battler and (ev.sideName or battler.side) == "player") then return end
   -- a team battle's player side holds the partner's mons too; their
   -- faints are the partner's to record
+  -- whose mon it is goes by its party slot's owner, not the position: after
+  -- continuing alone both positions hold this player's mons
   local st = ev and ev.battle
-  if b and b.team and st and st.linkOwn ~= nil and tonumber(ev.battlerId) ~= st.linkOwn then return end
+  if b and b.team and st and st.linkOwn ~= nil then
+    local owners = st.partyOwner and st.partyOwner.player
+    local owner = owners and battler.partyIndex and owners[battler.partyIndex]
+    if owner == nil then owner = tonumber(ev.battlerId) end
+    if owner ~= st.linkOwn then return end
+  end
   local mon = battler.mon
   local u = self.SL.uid(mon)
   local v = self:view()

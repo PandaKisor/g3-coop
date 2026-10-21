@@ -421,6 +421,25 @@ function TeamBattle.prize(E, session, foes, multiplier)
   return (Prize.apply(session, total))
 end
 
+-- The same, paid at most once per trainer.  receipts: a list of trainer
+-- ids already paid (kept in the save by main.lua), updated in place.
+function TeamBattle.settlePrize(E, session, ids, receipts, multiplier)
+  local paid = {}
+  for _, id in ipairs(receipts) do paid[id] = true end
+  local due = {}
+  for _, id in ipairs(ids or {}) do
+    id = tonumber(id)
+    if id and not paid[id] then
+      paid[id] = true
+      due[#due + 1] = { trainerId = id }
+    end
+  end
+  if #due == 0 then return 0 end
+  local got = TeamBattle.prize(E, session, due, multiplier)
+  for _, f in ipairs(due) do receipts[#receipts + 1] = f.trainerId end
+  return got
+end
+
 -- a win: both trainers count as beaten in this game
 function TeamBattle.markBeaten(E, foes)
   local Space, Flags = E.Space, E.Flags

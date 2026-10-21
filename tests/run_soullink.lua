@@ -521,6 +521,21 @@ do
   log = SL.log(W.run, W.tid)
   T.eq(log[#log].k, "faint", "our own faint in a team battle is real")
   W:onBattleEnded({})
+
+  -- continuing alone: our mon stands in the partner's old position, and
+  -- ownership goes by its party slot (COOP-DEV4-REVIEW P2)
+  W:onBattleStarted({ kind = "coopteam" })
+  before = #SL.log(W.run, W.tid)
+  W:onFainted({ sideName = "player", battlerId = 2,
+                battle = { linkOwn = 0, coopSolo = true, partyOwner = { player = { [7] = 0 } } },
+                battler = { side = "player", partyIndex = 7, mon = gW.party[2] } })
+  log = SL.log(W.run, W.tid)
+  T.eq(#log, before + 1, "after continuing alone, our faint in position 2 is recorded")
+  W:onFainted({ sideName = "player", battlerId = 0,
+                battle = { linkOwn = 0, partyOwner = { player = { [8] = 2 } } },
+                battler = { side = "player", partyIndex = 8, mon = gW.party[3] } })
+  T.eq(#SL.log(W.run, W.tid), before + 1, "a partner-owned slot is theirs wherever it stands")
+  W:onBattleEnded({})
 end
 
 T.finish("g3_coop soul link")

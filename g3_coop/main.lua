@@ -808,8 +808,8 @@ return function(mod)
   -- AUTOCONNECT waits for the overworld: at the title screen no save is
   -- loaded yet, so the hello would carry no trainer name ("PLAYER")
   local autoPending = false
-  -- shared trainer credit, defined with the battle events below
-  local applyCredits
+  -- shared trainer credit and team prizes, defined with the battle events below
+  local applyCredits, settlePrize
 
   local hinted = false
   local function tick(g)
@@ -1393,6 +1393,21 @@ return function(mod)
   })
   local creditSentTo = nil
 
+  -- Team-battle prizes, paid once per trainer: the receipts live in the save
+  -- itself (session.modData), so money and receipts are saved -- or lost to a
+  -- reload -- together.  A fight the partner finished after we dropped
+  -- (joint credit) is paid here when it arrives.
+  settlePrize = function(ids, multiplier)
+    local gs = gameSession()
+    if not gs then return 0 end
+    gs.modData = type(gs.modData) == "table" and gs.modData or {}
+    local mine = type(gs.modData.g3_coop) == "table" and gs.modData.g3_coop or {}
+    gs.modData.g3_coop = mine
+    mine.prizes = type(mine.prizes) == "table" and mine.prizes or {}
+    local got = TeamBattle.settlePrize(teamEngine(), gs, ids, mine.prizes, multiplier)
+    return got
+  end
+
   local function trainerInfo(id)
     local Trainers = engine("scripting.trainers")
     local ok, info = pcall(Trainers.info, id)
@@ -1452,6 +1467,20 @@ return function(mod)
             end
           end
           if had ~= nil then (msg.joint and joint or credit):add(id) end
+          -- still in our own team battle against them: battle.ended pays
+          local fighting = false
+          if activity and activity.kind == "team" and teamState then
+            for _, f in ipairs(teamState.foes or {}) do
+              if tonumber(f.trainerId) == id then fighting = true end
+            end
+          end
+          if msg.joint and had ~= nil and not fighting then
+            local okP, got = pcall(settlePrize, { id })
+            if okP and (tonumber(got) or 0) > 0 then
+              toast(("You got $%d for the fight %s finished."):format(got,
+                tostring(session.peer and session.peer.name or "your partner")), 5)
+            end
+          end
         end
       end
     end
@@ -1482,7 +1511,9 @@ return function(mod)
           if tonumber(f.trainerId) and joint:add(tonumber(f.trainerId)) then fresh[#fresh + 1] = tonumber(f.trainerId) end
         end
         if #fresh > 0 and session then session:sendCredit(fresh, false, true) end
-        local okP, got = pcall(TeamBattle.prize, E, gs, teamState.foes, ev.battle and ev.battle.moneyMultiplier)
+        local ids = {}
+        for _, f in ipairs(teamState.foes or {}) do ids[#ids + 1] = tonumber(f.trainerId) end
+        local okP, got = pcall(settlePrize, ids, ev.battle and ev.battle.moneyMultiplier)
         if okP and (tonumber(got) or 0) > 0 then toast(("You got $%d for winning!"):format(got), 5) end
       end
       -- a lost team battle whites out both players, each in their own game
@@ -1550,6 +1581,13 @@ return function(mod)
   end
   if BattleText then BattleText._g3coopText = function() return tracker:blockText() end end
   mod.hooks:wrap("catch.rate", function(next, ...)
+    -- A shared battle resolves every throw on both games, and the two
+    -- players' Soul Link eligibility may differ: a local veto here would
+    -- catch on one game and miss on the other.  There the rule is applied
+    -- only by the thrower's own bag (above), before any ball action exists.
+    local Battle = engine("battle")
+    local st = Battle and Battle.getState and Battle.getState()
+    if st and (st.coopTeam or st.link) then return next(...) end
     if tracker:blockText() then return false, 0 end
     return next(...)
   end)
