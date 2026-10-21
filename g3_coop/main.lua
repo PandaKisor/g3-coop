@@ -315,7 +315,31 @@ return function(mod)
     return tracker.run ~= nil and mod.options:get("soullink") == true and tracker:rules().caps == true
   end
 
+  -- On a cart the built-in story lists don't apply: a cart renumbers its
+  -- trainers (the Inclement port's are 60000+) and sets its own story, so
+  -- the vanilla rival's flag would never be set and the cap would stay at
+  -- the first fight forever.  A cart's mod may supply the cap instead:
+  --   mod.exports.coopLevelCap(session) -> { cap = level, label = text }
+  -- (cap = nil once there are no more caps).  Without one, caps are off.
+  local function cartCap()
+    local okS, SaveData = pcall(require, "src.core.SaveData")
+    local cart = okS and SaveData.getCart and SaveData.getCart() or nil
+    if not cart then return false end
+    for id, ex in pairs(game and game.mods and game.mods.exports or {}) do
+      if id ~= "g3_coop" and type(ex) == "table" and type(ex.coopLevelCap) == "function" then
+        local ok, r = pcall(ex.coopLevelCap, gameSession())
+        if ok and type(r) == "table" then
+          return true, { cap = tonumber(r.cap), label = tostring(r.label or "next big fight") }
+        end
+        return true, nil
+      end
+    end
+    return true, "no_list"
+  end
+
   local function computeCap()
+    local onCart, fromCart = cartCap()
+    if onCart then return fromCart end
     local s = gameSession()
     local Space = engine("scripting.space")
     if not (s and Space and Space.store) then return nil end
@@ -359,6 +383,14 @@ return function(mod)
     local ok, st = pcall(computeCap)
     if not ok then
       mod.log:warn("level caps: %s", tostring(st))
+      return
+    end
+    if st == "no_list" then
+      capState = nil
+      if capToldFor ~= "no_list" then
+        capToldFor = "no_list"
+        toast("Soul Link: this cart has no level-cap list yet, so level caps are off.", 6)
+      end
       return
     end
     capState = st

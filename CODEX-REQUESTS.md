@@ -85,6 +85,16 @@ The battle itself ran with 4 + 4. The in-battle party menu in a multi battle
 lays out 3 + 3. Please make it list the local player's own mons, up to six,
 when `st.multi` is set.
 
+## 7. Level caps for the campaign (optional, later)
+
+Co-op's Soul Link level caps use vanilla story lists, which don't fit the
+port (its trainers are 60000+ and the story differs), so on a cart caps are
+off with a notice. When the campaign's cap schedule exists, the port can
+export one function and co-op will use it in place of the vanilla list:
+
+`mod.exports.coopLevelCap(session) -> { cap = level, label = "BRAWLY" }`,
+or `{ cap = nil }` once no caps remain.
+
 ## Notes
 
 - Foe parties are built on the host, so whatever level rule the port uses
