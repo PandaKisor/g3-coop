@@ -299,6 +299,9 @@ function TeamBattle.begin(E, mine, peer, linkSeat, onDone)
   end
   local opts = {
     coopTeam = true,
+    -- a dropped partner pauses the battle; main.lua offers continue alone
+    -- or end (porting/full_port/COOP.md, dev.21)
+    coopDisconnect = "pause",
     -- by battler owner: the host is 0 and the guest 2 in both games
     coopTrainers = { [0] = who(host), [2] = who(guest) },
     coopMapSec = host.mapSec,
@@ -388,6 +391,8 @@ function TeamBattle.onFainted(counts, ev)
   local st = type(ev) == "table" and ev.battle
   local id = type(ev) == "table" and tonumber(ev.battlerId)
   if not (st and st.coopTeam and type(st.eliminated) == "table") then return false end
+  -- continuing alone after a disconnect lifts the limit
+  if st.coopSoloRequested or st.coopSolo then return false end
   if id ~= 0 and id ~= 2 then return false end
   counts[id] = (counts[id] or 0) + 1
   if counts[id] >= TeamBattle.FAINT_LIMIT and not st.eliminated[id] then
@@ -395,6 +400,25 @@ function TeamBattle.onFainted(counts, ev)
     return true
   end
   return false
+end
+
+-- A win's prize money (user, 2026-10-21): each player gets the full prize
+-- for both trainers, as if each had beaten them alone.  The amounts come
+-- from the game's own prize rule (a cart's may differ; the Inclement port's
+-- uses the highest party level).  Returns the amount added.
+function TeamBattle.prize(E, session, foes, multiplier)
+  local Prize = E.Prize
+  if not (Prize and Prize.calcRse and Prize.apply and session) then return 0 end
+  local total = 0
+  for _, f in ipairs(foes or {}) do
+    local tid = tonumber(f.trainerId)
+    if tid then
+      local ok, amount = pcall(Prize.calcRse, tid, { moneyMultiplier = multiplier or 1 })
+      if ok and tonumber(amount) then total = total + amount end
+    end
+  end
+  if total <= 0 then return 0 end
+  return (Prize.apply(session, total))
 end
 
 -- a win: both trainers count as beaten in this game

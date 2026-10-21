@@ -221,8 +221,8 @@ function Session:cancelAsk(id)
 end
 
 -- shared trainer credit (lib/credit.lua)
-function Session:sendCredit(ids, fresh)
-  if self.state == "connected" then self:_send(self.P.credit(ids, fresh)) end
+function Session:sendCredit(ids, fresh, joint)
+  if self.state == "connected" then self:_send(self.P.credit(ids, fresh, joint)) end
 end
 
 function Session:takeCredits()

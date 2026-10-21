@@ -205,8 +205,10 @@ end
 
 -- trainers beaten alone that count for both (lib/credit.lua); fresh = a win
 -- just now (the partner hears about it), else the list sent on connect
-function Protocol.credit(ids, fresh)
-  return { type = Protocol.CREDIT, ids = ids, fresh = fresh == true or nil }
+-- joint: joint fights won (a story fight finished alone after the partner
+-- dropped counts for both; never filtered as a story trainer)
+function Protocol.credit(ids, fresh, joint)
+  return { type = Protocol.CREDIT, ids = ids, fresh = fresh == true or nil, joint = joint == true or nil }
 end
 
 function Protocol.bye(reason)
@@ -411,7 +413,7 @@ validators[Protocol.CREDIT] = function(m)
     if not id then return nil, "bad_credit" end
     out[i] = id
   end
-  return { type = m.type, ids = out, fresh = m.fresh == true }
+  return { type = m.type, ids = out, fresh = m.fresh == true, joint = m.joint == true }
 end
 
 validators[Protocol.BYE] = function(m)

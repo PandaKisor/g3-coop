@@ -347,6 +347,44 @@ function Hud:drawPanel(vp, data, iconFor)
   return maxScroll
 end
 
+-- ------------------------------------------------------- choice panel
+
+-- A small box in the middle of the window over whatever is showing (the
+-- battle screen too): a title, lines, and options with one selected.
+function Hud:drawChoice(vp, title, lines, options, selected)
+  self:_setup(vp, true)
+  local g = self.gfx
+  local pad = math.max(4, self.u * 3)
+  local cp = math.max(2, self.u)
+  local width = math.min(self.gw - pad * 2, math.max(self.lh * 24, math.floor(self.gw * 0.5)))
+  local inner = width - pad * 3
+  local wrapped = {}
+  for _, l in ipairs(lines or {}) do
+    for _, w in ipairs(Hud.wrap(function(s) return self:w(s) end, l, inner)) do wrapped[#wrapped + 1] = w end
+  end
+  local height = self.lh * (2.2 + #wrapped * 1.15 + #options * 1.4 + 0.6) + pad * 2
+  local x = self.gx + math.floor((self.gw - width) / 2)
+  local y = self.gy + math.floor((self.gh - height) / 2)
+  self:_box(x, y, width, height, 1, C.warn)
+  local cx, cy = x + pad * 1.5, y + pad
+  self:_print(title, cx, cy, C.warn)
+  cy = cy + self.lh * 1.6
+  for _, l in ipairs(wrapped) do
+    self:_print(l, cx, cy, C.dim)
+    cy = cy + self.lh * 1.15
+  end
+  cy = cy + self.lh * 0.6
+  for i, o in ipairs(options) do
+    local w = self:w(o) + cp * 2
+    if i == selected then
+      g.setColor(C.warn[1], C.warn[2], C.warn[3], 0.3)
+      g.rectangle("fill", cx, cy, w, self.lh, cp, cp)
+    end
+    self:_print(o, cx + cp, cy, i == selected and C.text or C.dim)
+    cy = cy + self.lh * 1.4
+  end
+end
+
 -- ------------------------------------------------------- CO-OP > ADDRESS
 
 -- ed: a lib/connedit.lua editor.  One box in the middle of the window: the

@@ -233,6 +233,17 @@ do
   T.check(msg and #msg.ids == 512, "a full piece validates")
   T.eq(Protocol.validate({ type = "coop_credit", ids = { 1, "2" } }), nil, "string ids are refused")
   T.eq(Protocol.validate(Protocol.credit({ 60319 }, true)).fresh, true, "a fresh win says so")
+  T.eq(Protocol.validate(Protocol.credit({ 60319 }, false, true)).joint, true, "a joint win says so")
+  T.eq(Protocol.validate(Protocol.credit({ 60319 }, false)).joint, false, "an ordinary credit isn't joint")
+  local Team = lib("teambattle")
+  local paid
+  local E = { Prize = { calcRse = function(id) return id == 1 and 100 or 250 end,
+                        apply = function(_, amount) paid = amount; return amount end } }
+  T.eq(Team.prize(E, {}, { { trainerId = 1 }, { trainerId = 2 } }), 350, "each player gets both trainers' prizes")
+  T.eq(paid, 350, "paid in full")
+  T.eq(Team.prize(E, {}, { { name = "" }, { name = "" } }), 0, "wild foes pay nothing")
+  local st = { coopTeam = true, eliminated = {}, coopSolo = true }
+  T.eq(Team.onFainted({}, { battle = st, battlerId = 0 }), false, "no faint limit once alone")
 end
 
 -- ------- presence

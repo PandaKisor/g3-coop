@@ -425,6 +425,12 @@ return function(mod)
     -- a battle or trade in progress sees its channel fail and winds down
     -- through the engine (draw / aborted trade); it keeps being stepped
     if activity then activity:abort("partner_left") end
+    -- a team battle in progress pauses at once (the link's own timeout
+    -- would get there in about nine seconds)
+    if activity and activity.kind == "team" then
+      local Battle, LB = engine("battle"), engine("link.battle")
+      if Battle and Battle.coopPause and LB and LB.state == "battle" then pcall(Battle.coopPause, "partner_left") end
+    end
     session = nil
   end
 
@@ -457,7 +463,7 @@ return function(mod)
       Trainers = engine("scripting.trainers"), TextIR = engine("scripting.text_ir"),
       Party = engine("party"), Space = engine("scripting.space"), Flags = engine("scripting.flags"),
       Rng = engine("rng"), Pokemon = engine("pokemon"), Damage = engine("battle.damage"),
-      Encounters = engine("encounters"), Map = engine("map"),
+      Encounters = engine("encounters"), Map = engine("map"), Prize = engine("battle.prize"),
     }
   end
 
@@ -494,7 +500,7 @@ return function(mod)
     return true
   end
 
-  local RESULT_TEXT = { win = "You won the battle!", lose = "You lost the battle.",
+  local RESULT_TEXT = { win = "You won the battle!", lose = "You lost the battle.", run = "You got away safely.",
                         draw = "The battle ended in a draw." }
   local WHY_TEXT = {
     peer_left = "partner left", partner_left = "partner left", link_timeout = "no reply",
@@ -510,7 +516,8 @@ return function(mod)
     local seat = s.role == "host" and 0 or 1
     local pick = pickOverride or pendingTeam
     pendingTeam = nil
-    teamState = { slots = nil, foes = nil, written = nil, faints = {}, wild = pick and pick.wild }
+    teamState = { slots = nil, foes = nil, written = nil, faints = {}, wild = pick and pick.wild,
+                  peerName = s.peer and s.peer.name }
     return {
       mine = function()
         local gs = gameSession()
@@ -582,7 +589,7 @@ return function(mod)
           s:setBusy("none")
         end
         if requests then requests:finished() end
-        if act == "team" then teamState = nil end
+        if act == "team" then teamState, pausePanel = nil, nil end
         if act == "trade" or act == "battle" then endTradeFull() end
         if result == nil then
           toast("Couldn't " .. (act == "team" and "team up" or act) .. ": " .. tostring(WHY_TEXT[why] or why))
@@ -1037,6 +1044,49 @@ return function(mod)
     if hud then hud.scroll = 0 end
   end
 
+  -- A team battle paused because the partner dropped (dev.21 engine): the
+  -- battle stands still under this choice until one is picked.  Nothing can
+  -- bring the partner back into this battle (COOP.md), so there is no
+  -- "keep waiting": continue alone, or end it as a draw.
+  local pausePanel = nil
+  local PAUSE_OPTIONS = { "CONTINUE ALONE", "END THE BATTLE" }
+  local PAUSE_MOVE = { up = -1, down = 1, left = -1, right = 1, dpup = -1, dpdown = 1, dpleft = -1, dpright = 1 }
+  local PAUSE_PICK = { ["return"] = true, kpenter = true, z = true, a = true }
+  local function pausePick()
+    local p = pausePanel
+    pausePanel = nil
+    local Battle = engine("battle")
+    if not (p and Battle) then return end
+    if p.sel == 1 then
+      local ok, accepted, why = pcall(Battle.coopContinueSolo)
+      if ok and accepted then
+        toast("Continuing alone: your team takes both places.", 5)
+      else
+        mod.log:warn("continue alone refused: %s", tostring(why or accepted))
+        pcall(Battle.abort, "draw")
+      end
+    else
+      pcall(Battle.abort, "draw")
+    end
+  end
+  local function pauseInput(key)
+    if not pausePanel then return false end
+    if PAUSE_MOVE[key] then
+      pausePanel.sel = ((pausePanel.sel - 1 + PAUSE_MOVE[key]) % #PAUSE_OPTIONS) + 1
+    elseif PAUSE_PICK[key] then
+      pausePick()
+    end
+    return true
+  end
+  mod.events:on("battle.coop_paused", function(ev)
+    if not (activity and activity.kind == "team") then return end
+    pausePanel = { sel = 1, name = (session and session.peer and session.peer.name)
+      or (teamState and teamState.peerName) or "Your partner" }
+  end)
+  mod.events:on("battle.coop_solo", function()
+    if teamState then teamState.solo = true end
+  end)
+
   -- CO-OP > ADDRESS (lib/connedit.lua): while it's open it takes every key
   -- and button, and the field is held still
   local editor = nil
@@ -1082,6 +1132,10 @@ return function(mod)
   end
 
   mod.hooks:wrap("input.key", function(next, g, ev)
+    if pausePanel and ev then
+      if ev.phase == "pressed" then pauseInput(ev.key) end
+      return true
+    end
     if editor and ev then
       if ev.phase == "pressed" then
         local k = ev.key
@@ -1119,6 +1173,10 @@ return function(mod)
   end)
 
   mod.hooks:wrap("input.gamepad", function(next, g, ev)
+    if pausePanel and ev then
+      if ev.phase == "pressed" then pauseInput(ev.button) end
+      return true
+    end
     if editor and ev then
       if ev.phase == "pressed" then editorKey(EDIT_PAD[ev.button]) end
       return true
@@ -1322,6 +1380,17 @@ return function(mod)
     end,
     write = function(v) if game then pcall(mod.storage.write, mod.storage, game, "credits", v) end end,
   })
+  -- joint fights this game won with or for the partner (team battles, and
+  -- story fights finished alone after a drop): these count for both even
+  -- though they're story trainers
+  local joint = Credit.new({
+    read = function()
+      if not game then return nil end
+      local ok, v = pcall(mod.storage.read, mod.storage, game, "joint_wins")
+      return ok and type(v) == "table" and v or nil
+    end,
+    write = function(v) if game then pcall(mod.storage.write, mod.storage, game, "joint_wins", v) end end,
+  })
   local creditSentTo = nil
 
   local function trainerInfo(id)
@@ -1366,18 +1435,23 @@ return function(mod)
     if not (session and gameSession()) then return end
     for _, msg in ipairs(session:takeCredits()) do
       for _, id in ipairs(msg.ids) do
-        if not storyTrainer(id) then
+        if msg.joint or not storyTrainer(id) then
           local had = trainerBeaten(id)
           if had == false then
             trainerBeaten(id, true)
-            if msg.fresh then
+            if msg.joint then
+              local info = trainerInfo(id)
+              toast(("%s finished the fight with %s %s: it counts for you too."):format(
+                tostring(session.peer and session.peer.name or "Your partner"),
+                tostring(info.className or "TRAINER"), tostring(info.name or "")), 6)
+            elseif msg.fresh then
               local info = trainerInfo(id)
               toast(("%s beat %s %s: it counts for you too."):format(
                 tostring(session.peer and session.peer.name or "Your partner"),
                 tostring(info.className or "TRAINER"), tostring(info.name or "")), 5)
             end
           end
-          if had ~= nil then credit:add(id) end
+          if had ~= nil then (msg.joint and joint or credit):add(id) end
         end
       end
     end
@@ -1385,6 +1459,7 @@ return function(mod)
     if creditSentTo ~= session and session.state == "connected" then
       creditSentTo = session
       for _, ids in ipairs(credit:chunks(Protocol.MAX_CREDIT_IDS)) do session:sendCredit(ids, false) end
+      for _, ids in ipairs(joint:chunks(Protocol.MAX_CREDIT_IDS)) do session:sendCredit(ids, false, true) end
     end
   end
 
@@ -1400,7 +1475,16 @@ return function(mod)
       local ok, n = pcall(TeamBattle.writeback, E, gs, ev and ev.battle, teamState.slots)
       teamState.written = ok and n or 0
       if not ok then mod.log:warn("team battle writeback: %s", tostring(n)) end
-      if ev and ev.result == "win" and not teamState.wild then pcall(TeamBattle.markBeaten, E, teamState.foes) end
+      if ev and ev.result == "win" and not teamState.wild then
+        pcall(TeamBattle.markBeaten, E, teamState.foes)
+        local fresh = {}
+        for _, f in ipairs(teamState.foes or {}) do
+          if tonumber(f.trainerId) and joint:add(tonumber(f.trainerId)) then fresh[#fresh + 1] = tonumber(f.trainerId) end
+        end
+        if #fresh > 0 and session then session:sendCredit(fresh, false, true) end
+        local okP, got = pcall(TeamBattle.prize, E, gs, teamState.foes, ev.battle and ev.battle.moneyMultiplier)
+        if okP and (tonumber(got) or 0) > 0 then toast(("You got $%d for winning!"):format(got), 5) end
+      end
       -- a lost team battle whites out both players, each in their own game
       -- (battle_bridge.lua does this for a normal battle; it never does for
       -- a link battle)
@@ -1639,6 +1723,15 @@ return function(mod)
     local now = clock()
     for i = #toasts, 1, -1 do
       if toasts[i].untilT < now then table.remove(toasts, i) end
+    end
+    if pausePanel then
+      local ok, err = pcall(hud.drawChoice, hud, viewport, tostring(pausePanel.name) .. " disconnected",
+        { "The battle is paused. They can't come back into this battle.",
+          "Continue alone: your team takes both places, with no three-faint limit. A win still counts for both of you.",
+          "End the battle: it counts as a draw." },
+        PAUSE_OPTIONS, pausePanel.sel)
+      if not ok then mod.log:warn("co-op pause panel: %s", tostring(err)) end
+      return
     end
     if editor then
       local ok, err = pcall(hud.drawEditor, hud, viewport, editor, #ConnEdit.FIELDS)
