@@ -113,6 +113,26 @@ do
   T.eq(ed:press("cancel"), "cancel", "B cancels")
 end
 
+-- ------- whole-mon trades
+do
+  local TradeFull = lib("tradefull")
+  local full = { species = 559, personality = 2280996672, otId = 37734, otSecretId = 54514,
+                 moves = { 574, 43 }, nature = 3, abilityNum = 2 }
+  local packed = { species = 559, personality = 2280996672, otId = 37734, otSecretId = 54514, moves = { { id = 574 } } }
+  T.eq(TradeFull.key(full), TradeFull.key(packed), "a mon and its Gen 3 packet share a key")
+  T.eq(TradeFull.key({ personality = 5, otId = 54514 * 65536 + 37734 }), TradeFull.key({ personality = 5, otId = 37734, otSecretId = 54514 }),
+    "a 32-bit trainer id keys like the split one")
+  local LT = { unpackMon = function() return "vanilla" end }
+  local undo = TradeFull.install(LT, TradeFull.lookup({ tradeParty = {} }, { tradeParty = { full } }))
+  local got = LT.unpackMon(packed)
+  T.eq(got and got.moves[1], 574, "a known mon comes back whole")
+  T.eq(got and got.abilityNum, 2, "with the fields Gen 3 can't carry")
+  T.check(got ~= full, "as a copy")
+  T.eq(LT.unpackMon({ personality = 1, otId = 2 }), "vanilla", "an unknown mon goes to the engine")
+  undo()
+  T.eq(LT.unpackMon(packed), "vanilla", "uninstall puts the engine's unpack back")
+end
+
 -- ------- presence
 
 local player = { cellX = 3, cellY = 4, facing = "down", moving = false, elevation = 3, visible = true }

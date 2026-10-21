@@ -31,6 +31,7 @@ return function(mod)
   local LevelCap = import("lib/levelcap.lua")
   local TeamBattle = import("lib/teambattle.lua")
   local ConnEdit = import("lib/connedit.lua")
+  local TradeFull = import("lib/tradefull.lua")
 
   mod.options:define(import("options.lua"))
 
@@ -532,9 +533,23 @@ return function(mod)
     }
   end
 
+  -- a trade in progress (lib/tradefull.lua): { id, mine, uninstall }
+  local tradeFull = nil
+  local function endTradeFull()
+    if tradeFull and tradeFull.uninstall then pcall(tradeFull.uninstall) end
+    tradeFull = nil
+  end
+
   local function startActivity(act, id)
     local s = session
     local ch = s:openChannel(id)
+    if act == "trade" then
+      -- whole parties first, ahead of the engine's own link messages
+      endTradeFull()
+      local mine = TradeFull.side(gameSession())
+      tradeFull = { id = id, mine = mine }
+      s:sendTeam(id, mine)
+    end
     if act == "team" then ch.peerSeat = s.role == "host" and 1 or 0 end
     s:setBusy(act == "team" and "battle" or act)
     local mine
@@ -549,6 +564,7 @@ return function(mod)
         end
         if requests then requests:finished() end
         if act == "team" then teamState = nil end
+        if act == "trade" then endTradeFull() end
         if result == nil then
           toast("Couldn't " .. (act == "team" and "team up" or act) .. ": " .. tostring(WHY_TEXT[why] or why))
         elseif act == "battle" or act == "team" then
@@ -736,6 +752,13 @@ return function(mod)
   end
 
   local function stepActivity()
+    if tradeFull and not tradeFull.uninstall and session then
+      local peer = session:takeTeam(tradeFull.id)
+      local LT = engine("link.trade")
+      if peer and LT then
+        tradeFull.uninstall = TradeFull.install(LT, TradeFull.lookup(tradeFull.mine, peer))
+      end
+    end
     if not activity then return end
     local current = activity
     local ok, err = pcall(current.step, current)
