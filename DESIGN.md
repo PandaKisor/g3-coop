@@ -479,3 +479,22 @@ The port already overlays `battle/init.lua`, `battle/engine.lua`,
 `battle/ui.lua`, `party.lua` and the party menu, which are exactly the files
 D1 to D3 change. Two agents editing the same overlay files will collide, so
 ownership has to be agreed before any engine work starts.
+
+### Prototype status (2026-10-21, 0.8.0-dev.1)
+
+D2's core runs without engine changes (`lib/teambattle.lua`); tested on the
+dev.19 cart with two real games:
+
+| Check | Result |
+| --- | --- |
+| Win vs the port's Calvin + Rick (species 559/593/789), 8 turns | Identical HP both games every turn; guard never tripped |
+| Faint and replacement | Works (the partner's party menu shows the multi layout) |
+| Writeback | Each player's own mons only, HP/status per slot |
+| Shared trainer credit | Both trainer flags set in both saves on a win |
+| Loss | Both games lose; both white out (money halved, healed, at the Center) |
+| 4 + 4 parties (8 on the player side) | Battle runs and writes back; in-battle menu past six not exercised |
+
+Not done, and why: EXP (engine, CODEX-REQUESTS.md 3), three-faint limit
+(engine, 4), wild doubles and catching (engine, 5), prize money (needs a
+split decision), a menu entry and trainer sight start (co-op side, next),
+disconnect pause/fallback (D4), mid-battle join (D5).
