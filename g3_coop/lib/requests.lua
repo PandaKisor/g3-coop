@@ -11,13 +11,16 @@ Requests.__index = Requests
 
 -- how long the asker waits for an answer
 Requests.ANSWER_SECONDS = 30
+-- a wild POKeMON is waiting: the asker stands frozen until the answer
+Requests.ANSWER_SECONDS_FOR = { wild = 10 }
 -- how long a request may wait for the other player to be free to see it
 -- (mid-step, in a menu, reading a sign) before it is turned down as busy
 Requests.PROMPT_SECONDS = 8
 
 Requests.MENU = { "WAVE", "BATTLE", "TRADE", "CANCEL" }
 local MENU_ACT = { [0] = "wave", [1] = "battle", [2] = "trade" }
-local ACT_WORD = { battle = "battle", trade = "trade", team = "team up against trainers" }
+local ACT_WORD = { battle = "battle", trade = "trade", team = "team up against trainers",
+                   wild = "battle the wild POKeMON they found together" }
 
 local DECLINE_TEXT = {
   no = "%s said no.",
@@ -32,7 +35,8 @@ local DECLINE_TEXT = {
 local OWN_TEXT = {
   no_mons = { battle = "You need a POKeMON that can battle.",
               trade = "You need at least two POKeMON to trade.",
-              team = "You need a POKeMON that can battle." },
+              team = "You need a POKeMON that can battle.",
+              wild = "You need a POKeMON that can battle." },
   bad_egg = "You can't link with a BAD EGG.",
   enigma_berry = "You can't link holding an ENIGMA BERRY.",
 }
@@ -77,7 +81,10 @@ function Requests:talk()
   return true
 end
 
-function Requests:request(act)
+-- onRefused (optional): called once if the request ends without the
+-- partner agreeing -- a no, no answer in time, B to cancel, or the
+-- connection dropping -- so the caller can go on alone
+function Requests:request(act, onRefused)
   local d = self.d
   local s = d.session()
   if not (s and s.state == "connected") or self.outgoing or self.busy then return false end
@@ -90,14 +97,16 @@ function Requests:request(act)
   -- the two games number their requests on alternate ids, so a channel
   -- number is never claimed by both
   self.nextId = id + 2
-  self.outgoing = { id = id, act = act, at = d.now() }
+  self.outgoing = { id = id, act = act, at = d.now(), onRefused = onRefused }
   s:ask(id, act)
   d.ui.wait("Waiting for " .. self:_name() .. "...\n(B to cancel)", function()
-    if not (self.outgoing and self.outgoing.id == id) then return end
+    local out = self.outgoing
+    if not (out and out.id == id) then return end
     self.outgoing = nil
     s:cancelAsk(id)
     d.ui.close()
     d.ui.toast("You canceled.")
+    if out.onRefused then out.onRefused() end
   end)
   return true
 end
@@ -143,6 +152,7 @@ function Requests:_onAnswer(msg)
     self:_start(out.act, out.id)
   else
     d.ui.toast(DECLINE_TEXT[msg.why or "no"]:format(self:_name()))
+    if out.onRefused then out.onRefused() end
   end
 end
 
@@ -195,11 +205,12 @@ function Requests:tick()
     end
   end
   local out = self.outgoing
-  if out and t - out.at > Requests.ANSWER_SECONDS then
+  if out and t - out.at > (Requests.ANSWER_SECONDS_FOR[out.act] or Requests.ANSWER_SECONDS) then
     self.outgoing = nil
     s:cancelAsk(out.id)
     d.ui.close()
     d.ui.toast(DECLINE_TEXT.timeout:format(self:_name()))
+    if out.onRefused then out.onRefused() end
   end
 end
 
@@ -208,7 +219,9 @@ function Requests:reset()
   if self.outgoing or (self.incoming and self.incoming.shown) or self.menuOpen then
     self.d.ui.close()
   end
+  local out = self.outgoing
   self.outgoing, self.incoming, self.menuOpen = nil, nil, false
+  if out and out.onRefused then out.onRefused() end
 end
 
 return Requests

@@ -173,6 +173,44 @@ do
   T.eq(Team.onFainted({}, { battle = { eliminated = {} }, battlerId = 0 }), false, "only in a co-op team battle")
 end
 
+-- ------- a request's fallback (shared wild encounters)
+do
+  local Requests = lib("requests")
+  local P = Protocol
+  local t, sent, waitCancel = 0, {}, nil
+  local sess = { state = "connected", P = P, peer = { name = "MAY" },
+    ask = function(_, id, act) sent[#sent + 1] = { "ask", id, act } end,
+    cancelAsk = function(_, id) sent[#sent + 1] = { "cancel", id } end,
+    takeRequests = function(self) local l = self.q or {}; self.q = {}; return l end }
+  local ui = { menu = function() end, ask = function() end, close = function() end, toast = function() end,
+               wait = function(_, cb) waitCancel = cb end }
+  local started
+  local R = Requests.new({ session = function() return sess end, now = function() return t end, firstId = 1, ui = ui,
+    canPrompt = function() return true end, eligible = function() return true end,
+    wave = function() end, start = function(act) started = act end })
+  local alone = 0
+  local function fallback() alone = alone + 1 end
+  T.check(R:request("wild", fallback), "a wild request goes out")
+  sess.q = { { type = P.ANSWER, id = 1, ok = false, why = "no" } }
+  R:tick()
+  T.eq(alone, 1, "a no plays the encounter alone")
+  T.check(R:request("wild", fallback), "another")
+  t = t + Requests.ANSWER_SECONDS_FOR.wild + 1
+  R:tick()
+  T.eq(alone, 2, "no answer within the wild timeout plays it alone")
+  T.check(R:request("wild", fallback), "another")
+  waitCancel()
+  T.eq(alone, 3, "B to cancel plays it alone")
+  T.check(R:request("wild", fallback), "another")
+  R:reset()
+  T.eq(alone, 4, "a dropped connection plays it alone")
+  T.check(R:request("wild", fallback), "another")
+  sess.q = { { type = P.ANSWER, id = 9, ok = true } }
+  R:tick()
+  T.eq(started, "wild", "a yes starts the shared battle")
+  T.eq(alone, 4, "and nothing plays alone")
+end
+
 -- ------- presence
 
 local player = { cellX = 3, cellY = 4, facing = "down", moving = false, elevation = 3, visible = true }

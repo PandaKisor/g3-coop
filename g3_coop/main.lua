@@ -471,7 +471,7 @@ return function(mod)
   end
 
   local function eligible(act)
-    if act == "team" then
+    if act == "team" or act == "wild" then
       if not hasLivingMon() then return false, "no_mons" end
       return true
     end
@@ -504,10 +504,10 @@ return function(mod)
   }
 
   -- what lib/activity.lua needs for a team battle on channel id
-  local function teamDeps(s, id)
+  local function teamDeps(s, id, pickOverride)
     local E = teamEngine()
     local seat = s.role == "host" and 0 or 1
-    local pick = pendingTeam
+    local pick = pickOverride or pendingTeam
     pendingTeam = nil
     teamState = { slots = nil, foes = nil, written = nil, faints = {}, wild = pick and pick.wild }
     return {
@@ -539,6 +539,9 @@ return function(mod)
     }
   end
 
+  -- the field held still while a found wild POKeMON waits for the partner
+  local WILD_LOCK = "g3coop_wild"
+
   -- a trade in progress (lib/tradefull.lua): { id, mine, uninstall }
   local tradeFull = nil
   local function endTradeFull()
@@ -556,12 +559,21 @@ return function(mod)
       tradeFull = { id = id, mine = mine, act = act }
       s:sendTeam(id, mine)
     end
+    -- a wild POKeMON one of us found: a team battle against two wild foes
+    -- the host rolls on the shared map
+    local wildPick = nil
+    if act == "wild" then
+      wildPick = { wild = true }
+      act = "team"
+      local Field = engine("field")
+      if Field and Field.unlock then Field.unlock(WILD_LOCK) end
+    end
     if act == "team" then ch.peerSeat = s.role == "host" and 1 or 0 end
     s:setBusy(act == "team" and "battle" or act)
     local mine
     mine = Activity.new({
       kind = act, seat = s.role == "host" and 0 or 1, channel = ch, game = game,
-      now = clock, E = activityEngine(), team = act == "team" and teamDeps(s, id) or nil,
+      now = clock, E = activityEngine(), team = act == "team" and teamDeps(s, id, wildPick) or nil,
       onEnd = function(result, why)
         if activity == mine then activity = nil end
         if session == s then
@@ -1205,8 +1217,60 @@ return function(mod)
   if Bridge and Bridge.startWild and not Bridge._g3coopStartWild then
     Bridge._g3coopStartWild = Bridge.startWild
     Bridge.startWild = function(m, g, enc, opts)
+      -- an ordinary step in the grass may become a shared wild double
+      -- (_g3coopShare, below, decides and takes it over)
+      local stepped = Bridge._g3coopStep
+      Bridge._g3coopStep = nil
+      if stepped and Bridge._g3coopShare then
+        local ok, took = pcall(Bridge._g3coopShare, m, g, enc, opts)
+        if ok and took then return true end
+      end
       Bridge._g3coopHow = (type(opts) == "table" and opts.done) and "static" or "wild"
       return Bridge._g3coopStartWild(m, g, enc, opts)
+    end
+  end
+  -- which encounters came from a step: Sweet Scent, Rock Smash, fishing and
+  -- scripted battles call startWild too, and stay solo
+  local Encounters = engine("encounters")
+  if Encounters and Encounters.onStep and not Encounters._g3coopOnStep then
+    Encounters._g3coopOnStep = Encounters.onStep
+    Encounters.onStep = function(...)
+      local enc = Encounters._g3coopOnStep(...)
+      if enc and Bridge then Bridge._g3coopStep = true end
+      return enc
+    end
+  end
+
+  -- The addendum's shared wild encounters: a step encounter with the partner
+  -- on the same map, free, asks them to join.  Yes: both games enter a wild
+  -- double the host rolls on that map.  No, no answer in time, B, or a
+  -- dropped connection: the encounter that was found plays out alone.
+  -- Surfing stays solo (the shared double rolls the land table).
+  local function partnerHere()
+    local s, gs = session, gameSession()
+    if not (s and s.state == "connected" and not s:stale() and gs) then return false end
+    if s.peerBusy ~= "none" then return false end
+    local ghost = s.ghost
+    return ghost and ghost.known and ghost.visible and ghost.map == gs.map
+  end
+  if Bridge then
+    Bridge._g3coopShare = function(m, g, enc, opts)
+      local gs = gameSession()
+      if activity or not requests or requests.outgoing or requests.busy then return false end
+      if type(opts) == "table" and (opts.done or opts.wildScripted or opts.legendary) then return false end
+      if not (game and game.phase == "field") or (gs and gs.surfing) or not partnerHere() then return false end
+      local Field = engine("field")
+      if Field and Field.lock then Field.lock(WILD_LOCK) end
+      local alone = function()
+        if Field and Field.unlock then Field.unlock(WILD_LOCK) end
+        Bridge.startWild(m, g, enc, opts)
+      end
+      if not requests:request("wild", alone) then
+        if Field and Field.unlock then Field.unlock(WILD_LOCK) end
+        return false
+      end
+      toast("Wild POKeMON! Asking " .. tostring(session.peer and session.peer.name or "your partner") .. " to join...", 4)
+      return true
     end
   end
 

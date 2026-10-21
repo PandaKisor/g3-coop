@@ -43,7 +43,7 @@ Protocol.MAX_SL_LOG = 2 ^ 20
 local DIRS = { up = true, down = true, left = true, right = true }
 local BUSY = { none = true, battle = true, trade = true, menu = true, script = true }
 local EMOTES = { wave = true }
-local ACTS = { battle = true, trade = true, team = true }
+local ACTS = { battle = true, trade = true, team = true, wild = true }
 -- why a request was turned down; the HUD words each one
 local DECLINES = { no = true, busy = true, no_mons = true, bad_egg = true,
                    enigma_berry = true, timeout = true, error = true }
