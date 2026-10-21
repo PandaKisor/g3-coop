@@ -426,3 +426,56 @@ behavior. Validate transitions between solo, shared and disconnect-fallback
 battles, plus deferred Soul Link losses and story gates. The same-map range
 and encounter difficulty should be revisited through playtesting with the two
 intended players.
+
+## Doubles plan (2026-10-21, investigation only; nothing built)
+
+### What the engine already has
+
+The Battle Tower link multi (`src/core/game3/link/tower_link.lua`) is two
+linked humans against two AI trainers, running in lockstep:
+
+- `LB.beginMulti(setups, onDone, { battle = opts })` starts a 2v2 link battle;
+  `opts` passes through to `BattleBridge.start`.
+- `LB.setVirtual({ seats = { [seat] = { action = fn, switch = fn } } })`
+  makes a seat AI-driven. Only the host (seat 0) runs the AI and sends the
+  moves as that seat's link actions, so both games see the same choices.
+- Seat 0's setup carries the foe parties and the shared seed; both games
+  simulate from `LB.makeRng(seed)`. `link_guard` raises on any other RNG, and
+  the AI (`ai.lua`) and the port's `damage.lua` both use the battle RNG.
+- Party ownership is a per-slot owner list (`multiLayout`,
+  `State.ownsSlot`), not hard-coded to three each.
+
+### Gaps between a Tower link multi and a campaign battle
+
+| Gap | Today | Campaign needs |
+| --- | --- | --- |
+| Persistence | Link battles use copies; real party untouched; `noExp.link` | EXP, levels, moves, evolution, HP/PP/status, held-item use and money written back to each player's own party and save |
+| Party size | `LB.MULTI_PARTY_SIZE = 3` each | Six each, three-faint elimination (co-op only) |
+| Foes | Frontier trainers from seat 0's setup | Campaign trainers (port data: custom moves, spreads, abilities), fixed levels, single-trainer doubles, two-trainer doubles, authored 2v1 |
+| Wild | Not possible in link mode; no bag | Two wild foes, balls allowed, each player catches into their own party, Soul Link per player |
+| Interactive post-turn events | None in link battles | Level-up move learning and evolution are local UI; lockstep must wait for both |
+| Start | Tower script | Trainer sight/approach on the field with two players, same-map rule, story gates |
+| Shared credit | — | Trainer-defeated flags synced to both saves |
+| Disconnect | Battle ends as a draw | Pause, then a solo fallback the remaining player can finish |
+
+### Proposed order
+
+1. **D1: solo doubles everywhere (no network).** Every trainer and wild
+   battle is a double; the solo player controls both positions with their
+   own six. Needs content decisions for trainers with one Pokémon and for
+   wild pairs. This is the base everything else stands on.
+2. **D2: co-op trainer double, both present at start.** Tower-style lockstep
+   (host runs foe AI), six each, three-faint limit, results written back to
+   both saves, shared trainer credit. Mandatory fights require this.
+3. **D3: co-op wild double.** Two wild foes, catching, Soul Link pairing per
+   player.
+4. **D4: disconnect pause and solo fallback**, including story-fight credit.
+5. **D5: joining a battle already in progress, and two concurrent
+   battles.** The hardest step; designed after D2 to D4 have been played.
+
+### Ownership risk
+
+The port already overlays `battle/init.lua`, `battle/engine.lua`,
+`battle/ui.lua`, `party.lua` and the party menu, which are exactly the files
+D1 to D3 change. Two agents editing the same overlay files will collide, so
+ownership has to be agreed before any engine work starts.
