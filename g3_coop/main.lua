@@ -456,6 +456,7 @@ return function(mod)
       Trainers = engine("scripting.trainers"), TextIR = engine("scripting.text_ir"),
       Party = engine("party"), Space = engine("scripting.space"), Flags = engine("scripting.flags"),
       Rng = engine("rng"), Pokemon = engine("pokemon"), Damage = engine("battle.damage"),
+      Encounters = engine("encounters"), Map = engine("map"),
     }
   end
 
@@ -508,7 +509,7 @@ return function(mod)
     local seat = s.role == "host" and 0 or 1
     local pick = pendingTeam
     pendingTeam = nil
-    teamState = { slots = nil, foes = nil, written = nil }
+    teamState = { slots = nil, foes = nil, written = nil, faints = {}, wild = pick and pick.wild }
     return {
       mine = function()
         local gs = gameSession()
@@ -517,7 +518,11 @@ return function(mod)
         if seat == 0 then
           if not pick then return nil, "error" end
           local seed = math.floor((os.time() * 7919 + clock() * 1000003)) % 4294967296
-          setup, why = TeamBattle.hostSetup(E, gs, pick.a, pick.b, seed)
+          if pick.wild then
+            setup, why = TeamBattle.hostWildSetup(E, gs, pick.map or gs.map or (E.Map and E.Map.current), seed)
+          else
+            setup, why = TeamBattle.hostSetup(E, gs, pick.a, pick.b, seed)
+          end
         else
           setup = TeamBattle.mySide(E, gs)
         end
@@ -528,6 +533,7 @@ return function(mod)
       take = function() return s:takeTeam(id) end,
       begin = function(mine, peer, onDone)
         teamState.foes = (seat == 0 and mine or peer).foes
+        teamState.wild = (seat == 0 and mine or peer).wild and true or nil
         return TeamBattle.begin(E, mine, peer, seat, onDone)
       end,
     }
@@ -1218,6 +1224,17 @@ return function(mod)
     if not ok then mod.log:warn("soul link: %s", tostring(err)) end
   end)
   mod.events:on("battle.fainted", function(ev)
+    -- the three-faint limit in a team battle; both games see the same
+    -- faints in the same order, so both mark the same owner out
+    if teamState and activity and activity.kind == "team" then
+      local okF, out = pcall(TeamBattle.onFainted, teamState.faints, ev)
+      if okF and out then
+        local s = session
+        local mine = s and ((s.role == "host") == (tonumber(ev.battlerId) == 0))
+        toast(mine and "That's three faints: you're out of this battle."
+          or ((s and s.peer and s.peer.name or "Your partner") .. " is out of this battle (three faints)."), 5)
+      end
+    end
     local ok, err = pcall(tracker.onFainted, tracker, ev)
     if not ok then mod.log:warn("soul link: %s", tostring(err)) end
   end)
@@ -1229,7 +1246,7 @@ return function(mod)
       local ok, n = pcall(TeamBattle.writeback, E, gs, ev and ev.battle, teamState.slots)
       teamState.written = ok and n or 0
       if not ok then mod.log:warn("team battle writeback: %s", tostring(n)) end
-      if ev and ev.result == "win" then pcall(TeamBattle.markBeaten, E, teamState.foes) end
+      if ev and ev.result == "win" and not teamState.wild then pcall(TeamBattle.markBeaten, E, teamState.foes) end
       -- a lost team battle whites out both players, each in their own game
       -- (battle_bridge.lua does this for a normal battle; it never does for
       -- a link battle)
@@ -1521,6 +1538,15 @@ return function(mod)
     return ok
   end
   mod.exports.teamState = function() return teamState end
+  -- prototype entry for a wild double on the host's map (mapId: another
+  -- map's table, for testing)
+  mod.exports.teamWild = function(mapId)
+    if not (session and session.role == "host" and requests) then return false, "not_host" end
+    pendingTeam = { wild = true, map = mapId }
+    local ok = requests:request("team")
+    if not ok then pendingTeam = nil end
+    return ok
+  end
   mod.exports.editor = function() return editor end
   mod.exports.openEditor = function() openEditor() end
   mod.exports.setting = setting

@@ -22,6 +22,12 @@
 -- After the battle, each player's own mons are written back to their own
 -- party from the battle's final state, like a normal trainer battle and
 -- unlike a cable battle, and a win marks both trainers beaten in both games.
+--
+-- With the port's dev.20 engine (porting/full_port/COOP.md) the battle opts
+-- in with coopTeam: shared EXP for every player-side mon, owner-only level-up
+-- screens and move choices after the battle, the three-faint elimination
+-- mark, and wild doubles where balls travel as link actions.  Without that
+-- engine the flag is ignored and the battle runs as before (no EXP).
 
 local TeamBattle = {}
 
@@ -75,6 +81,8 @@ function TeamBattle.mySide(E, session)
     name = tostring(session.name or "PLAYER"),
     gender = gender,
     trainerId = tonumber(session.trainerId) or 0,
+    -- the full id travels for EXP's traded-mon bonus (COOP.md coopTrainers)
+    secretId = tonumber(session.secretId) or nil,
     party = party, slots = slots,
   }
 end
@@ -160,6 +168,14 @@ function TeamBattle.foe(E, trainerId)
   }
 end
 
+-- the host's area, for EXP's location-dependent friendship: both games
+-- must use the same one (COOP.md coopMapSec)
+local function hostMapSec(E, session)
+  if not (E.Pokemon and E.Pokemon.currentMapSec) then return nil end
+  local ok, sec = pcall(E.Pokemon.currentMapSec, session)
+  return ok and tonumber(sec) or nil
+end
+
 -- The host's setup also carries both foes and the seed.
 function TeamBattle.hostSetup(E, session, trainerA, trainerB, seed)
   local side = TeamBattle.mySide(E, session)
@@ -169,6 +185,42 @@ function TeamBattle.hostSetup(E, session, trainerA, trainerB, seed)
   if not b then return nil, whyB end
   side.foes = { a, b }
   side.seed = math.floor(tonumber(seed) or 0) % 4294967296
+  side.mapSec = hostMapSec(E, session)
+  return side
+end
+
+-- One wild mon from an encounter roll ({ species, level, item? }), finished
+-- on the host the way the battle would finish it.
+function TeamBattle.wildMon(E, enc)
+  if type(enc) ~= "table" or not tonumber(enc.species) then return nil end
+  local m = { species = tonumber(enc.species), level = tonumber(enc.level) or 5,
+              item = tonumber(enc.item) or 0, personality = enc.personality, ivs = enc.ivs,
+              moves = enc.moves }
+  m = TeamBattle.completeFoeMon(E, m)
+  -- a cart with its own ability slots (the Inclement port) fills them here
+  local refresh = E.Pokemon and E.Pokemon._inclementAbilities and E.Pokemon._inclementAbilities.refresh
+  if refresh then pcall(refresh, m, m.abilityNum) end
+  return m
+end
+
+-- A wild double: two encounters rolled on the host's map, each a
+-- one-mon foe party.  nil plus a reason when the map has no wild table.
+function TeamBattle.hostWildSetup(E, session, mapId, seed)
+  local side = TeamBattle.mySide(E, session)
+  local foes = {}
+  for i = 1, 2 do
+    -- Sweet Scent's roll: always an encounter from the land table (the
+    -- step roll would also test the encounter rate)
+    local ok, enc = pcall(E.Encounters.rollSweetScent, mapId, "land")
+    if not ok or type(enc) ~= "table" then return nil, "no_wild" end
+    local m = TeamBattle.wildMon(E, enc)
+    if not m then return nil, "no_wild" end
+    foes[i] = { name = "", wild = true, party = { m } }
+  end
+  side.foes = foes
+  side.wild = true
+  side.seed = math.floor(tonumber(seed) or 0) % 4294967296
+  side.mapSec = hostMapSec(E, session)
   return side
 end
 
@@ -242,18 +294,29 @@ function TeamBattle.begin(E, mine, peer, linkSeat, onDone)
 
   local foeA, foeB = host.foes[1], host.foes[2]
   local function row(f) return { class = f.class, className = f.className, name = f.name, pic = f.pic } end
+  local function who(side)
+    return { name = side.name, trainerId = side.trainerId, secretId = side.secretId }
+  end
   local opts = {
-    towerLinkMulti = true,
+    coopTeam = true,
+    -- by battler owner: the host is 0 and the guest 2 in both games
+    coopTrainers = { [0] = who(host), [2] = who(guest) },
+    coopMapSec = host.mapSec,
     scriptedLoss = true,
-    aiFlags = foeA.aiFlags,
-    trainerItems = { 0, 0, 0, 0 },
-    trainerName = foeA.name,
-    trainerPicId = foeA.pic,
-    frontierTrainer = row(foeA),
-    frontierTrainerB = row(foeB),
-    defeatText = foeA.defeatText,
-    defeatTextB = foeB.defeatText,
   }
+  if host.wild then
+    opts.wild = true
+  else
+    opts.towerLinkMulti = true
+    opts.aiFlags = foeA.aiFlags
+    opts.trainerItems = { 0, 0, 0, 0 }
+    opts.trainerName = foeA.name
+    opts.trainerPicId = foeA.pic
+    opts.frontierTrainer = row(foeA)
+    opts.frontierTrainerB = row(foeB)
+    opts.defeatText = foeA.defeatText
+    opts.defeatTextB = foeB.defeatText
+  end
 
   -- LB.beginMulti reads the other seats' parties through unpackMultiParty
   -- (the Gen 3 wire format) and caps each at MULTI_PARTY_SIZE; for this one
@@ -313,6 +376,25 @@ function TeamBattle.writeback(E, session, st, slots)
     end
   end
   return written
+end
+
+-- The three-faint limit (campaign co-op): count faints by the battler
+-- position that owns them (0 the host, 2 the guest, the same in both
+-- games), and on the third mark that owner out; the engine then skips its
+-- replacements and the partner fights on.  counts: per-battle table.
+-- Returns true when this faint eliminated the owner.
+TeamBattle.FAINT_LIMIT = 3
+function TeamBattle.onFainted(counts, ev)
+  local st = type(ev) == "table" and ev.battle
+  local id = type(ev) == "table" and tonumber(ev.battlerId)
+  if not (st and st.coopTeam and type(st.eliminated) == "table") then return false end
+  if id ~= 0 and id ~= 2 then return false end
+  counts[id] = (counts[id] or 0) + 1
+  if counts[id] >= TeamBattle.FAINT_LIMIT and not st.eliminated[id] then
+    st.eliminated[id] = true
+    return true
+  end
+  return false
 end
 
 -- a win: both trainers count as beaten in this game

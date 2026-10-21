@@ -156,6 +156,23 @@ do
   T.eq(LB.unpackParty({ packet }), "vanilla", "uninstall restores the engine's")
 end
 
+-- ------- three-faint limit
+do
+  local Team = lib("teambattle")
+  local st = { coopTeam = true, eliminated = {} }
+  local counts = {}
+  local function faint(id) return Team.onFainted(counts, { battle = st, battlerId = id }) end
+  T.eq(faint(0), false, "a first faint doesn't eliminate")
+  faint(2); faint(0)
+  T.eq(st.eliminated[0], nil, "two faints don't either")
+  T.eq(faint(1), false, "foe faints don't count")
+  T.eq(faint(0), true, "the third faint of an owner eliminates them")
+  T.eq(st.eliminated[0], true, "and marks the battle")
+  T.eq(st.eliminated[2], nil, "the partner is still in")
+  T.eq(faint(0), false, "an owner is only eliminated once")
+  T.eq(Team.onFainted({}, { battle = { eliminated = {} }, battlerId = 0 }), false, "only in a co-op team battle")
+end
+
 -- ------- presence
 
 local player = { cellX = 3, cellY = 4, facing = "down", moving = false, elevation = 3, visible = true }
