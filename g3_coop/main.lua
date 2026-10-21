@@ -478,7 +478,7 @@ return function(mod)
   end
 
   local function eligible(act)
-    if act == "team" or act == "wild" then
+    if act == "team" or act == "wild" or act == "trainer" or act == "joint" then
       if not hasLivingMon() then return false, "no_mons" end
       return true
     end
@@ -557,7 +557,24 @@ return function(mod)
     tradeFull = nil
   end
 
-  local function startActivity(act, id)
+  -- A trainer fight this game's script is holding for a team battle:
+  -- { done = the script's battle callback, noWhiteout }.  The script resumes
+  -- only after the team battle's result (COOP.md "Campaign exports and
+  -- event gate").
+  local heldTrainer = nil
+
+  -- the trainer script's result: a win, or anything else as a loss (a
+  -- "draw" would count as beaten); called once
+  local function releaseHeld(word)
+    local h = heldTrainer
+    heldTrainer = nil
+    if not (h and h.done) then return end
+    local Field = engine("field")
+    if Field and Field.unlock then Field.unlock(WILD_LOCK) end
+    pcall(h.done, word == "win" and "win" or "lose")
+  end
+
+  local function startActivity(act, id, t)
     local s = session
     local ch = s:openChannel(id)
     if act == "trade" or act == "battle" then
@@ -572,6 +589,13 @@ return function(mod)
     local wildPick = nil
     if act == "wild" then
       wildPick = { wild = true }
+      act = "team"
+      local Field = engine("field")
+      if Field and Field.unlock then Field.unlock(WILD_LOCK) end
+    elseif (act == "trainer" or act == "joint") and type(t) == "table" and t[1] then
+      -- a trainer fight together: one trainer commanding both positions, or
+      -- the event's pair; the host builds it whoever found it
+      wildPick = { a = t[1], b = t[2] }
       act = "team"
       local Field = engine("field")
       if Field and Field.unlock then Field.unlock(WILD_LOCK) end
@@ -590,6 +614,9 @@ return function(mod)
         end
         if requests then requests:finished() end
         if act == "team" then teamState, pausePanel = nil, nil end
+        -- the trainer's script carries on now: after the battle's own
+        -- teardown, with its result (a fight that never started is lost)
+        if heldTrainer then releaseHeld(result) end
         if act == "trade" or act == "battle" then endTradeFull() end
         if result == nil then
           toast("Couldn't " .. (act == "team" and "team up" or act) .. ": " .. tostring(WHY_TEXT[why] or why))
@@ -1292,6 +1319,19 @@ return function(mod)
       return Bridge._g3coopStartWild(m, g, enc, opts)
     end
   end
+  -- trainer battles a script starts (_g3coopTrainer, with the joint-fight
+  -- gate, decides); co-op's own link battles and wild battles pass through
+  if Bridge and Bridge.start and not Bridge._g3coopStart then
+    Bridge._g3coopStart = Bridge.start
+    Bridge.start = function(m, g, foe, opts)
+      if type(opts) == "table" and not opts.link and not opts.wild and opts.trainerId
+          and Bridge._g3coopTrainer then
+        local ok, took = pcall(Bridge._g3coopTrainer, m, g, foe, opts)
+        if ok and took then return true end
+      end
+      return Bridge._g3coopStart(m, g, foe, opts)
+    end
+  end
   -- which encounters came from a step: Sweet Scent, Rock Smash, fishing and
   -- scripted battles call startWild too, and stay solo
   local Encounters = engine("encounters")
@@ -1492,6 +1532,91 @@ return function(mod)
     end
   end
 
+  -- ------------------------------------------- trainer fights together
+
+  -- The port's plan for a trainer fight (COOP.md "Campaign exports"): one
+  -- trainer commanding both positions, or an event's explicit pair.
+  local function trainerPlan(id, second)
+    for mid, ex in pairs(game and game.mods and game.mods.exports or {}) do
+      if mid ~= "g3_coop" and type(ex) == "table" and type(ex.coopTrainerPlan) == "function" then
+        local ok, plan = pcall(ex.coopTrainerPlan, id, second)
+        if ok and type(plan) == "table" and type(plan.trainerIds) == "table" then return plan end
+      end
+    end
+    return { trainerIds = second and { id, second } or { id },
+             story = storyTrainer(id) or (second ~= nil and storyTrainer(second)) }
+  end
+
+  local function partnerCanJoin()
+    return partnerHere() and not activity and not heldTrainer
+      and not (requests and (requests.outgoing or requests.busy))
+  end
+
+  -- The joint-fight gate (user, 2026-10-21): a rival, gym or story fight
+  -- doesn't start unless the partner can be in it, offline included.  The
+  -- engine asks before any approach or cutscene and shows our text in a box
+  -- the player can dismiss and walk away from.
+  mod.hooks:wrap("trainer.joint_gate", function(next, trainerId, kind, context)
+    local base = next(trainerId, kind, context)
+    if type(base) == "table" and base.action == "wait" then return base end
+    local story = false
+    local ids = { trainerId }
+    for _, id in ipairs(type(context) == "table" and type(context.trainers) == "table" and context.trainers or {}) do
+      ids[#ids + 1] = id
+    end
+    for _, id in ipairs(ids) do
+      if tonumber(id) and storyTrainer(tonumber(id)) then story = true end
+    end
+    if not story or partnerCanJoin() then return base or { action = "allow" } end
+    local name = session and session.peer and session.peer.name
+    return { action = "wait", text = name
+      and ("This fight is for both of you.\nWait for " .. tostring(name) .. " to be here.")
+      or "This fight is for both of you.\nPlease wait for your partner." }
+  end)
+
+  -- A trainer battle the script is about to start becomes a team battle
+  -- when the partner is here: a story fight pulls them in (they were
+  -- checked at the gate), an ordinary one asks them first and runs solo on
+  -- a no.  The script waits (heldTrainer) and gets the team battle's result.
+  if Bridge then
+    Bridge._g3coopTrainer = function(m, g, foe, opts)
+      local tid = tonumber(opts.trainerId)
+      if not tid or opts.firstBattle or opts.trainerTower or opts.eReader or opts.secretBase then return false end
+      if not (game and game.phase == "field") then return false end
+      local plan = trainerPlan(tid, tonumber(opts.trainerIdB))
+      local story = plan.story == true
+      if not partnerCanJoin() then
+        if not story then return false end
+        -- the gate let it through, but the partner is gone since
+        toast("Your partner isn't here any more: this fight waits for both of you.", 6)
+        pcall(opts.done, "lose")
+        return true
+      end
+      local Field = engine("field")
+      if Field and Field.lock then Field.lock(WILD_LOCK) end
+      heldTrainer = { done = opts.done, noWhiteout = opts.noWhiteout }
+      local alone = function()
+        if story then
+          toast("The fight is called off: it needs both of you.", 6)
+          releaseHeld("lose")
+        else
+          heldTrainer = nil
+          if Field and Field.unlock then Field.unlock(WILD_LOCK) end
+          Bridge._g3coopStart(m, g, foe, opts)
+        end
+      end
+      if not requests:request(story and "joint" or "trainer", alone, plan.trainerIds) then
+        heldTrainer = nil
+        if Field and Field.unlock then Field.unlock(WILD_LOCK) end
+        if story then pcall(opts.done, "lose") return true end
+        return false
+      end
+      local name = tostring(session.peer and session.peer.name or "your partner")
+      toast(story and ("Starting the fight with " .. name .. "...") or ("Asking " .. name .. " to join the fight..."), 4)
+      return true
+    end
+  end
+
   mod.events:on("battle.ended", function(ev)
     if not activity and ev and ev.result == "win" then
       local ok, err = pcall(creditWin, ev.battle)
@@ -1520,9 +1645,14 @@ return function(mod)
       -- (battle_bridge.lua does this for a normal battle; it never does for
       -- a link battle)
       if ev and (ev.result == "lose" or ev.result == "whiteout") then
-        local B, Field = engine("battle_bridge"), engine("field")
-        if B and B.applyWhiteoutMoneyLoss then pcall(B.applyWhiteoutMoneyLoss, gs, game and game.save) end
-        if Field and Field.respawnAtHeal then pcall(Field.respawnAtHeal) end
+        local B, Field, Party = engine("battle_bridge"), engine("field"), engine("party")
+        if heldTrainer and heldTrainer.noWhiteout then
+          -- the early rival: heal and carry on (battle_bridge.lua writeback)
+          if Party and Party.healAll and gs then pcall(Party.healAll, gs.party) end
+        else
+          if B and B.applyWhiteoutMoneyLoss then pcall(B.applyWhiteoutMoneyLoss, gs, game and game.save) end
+          if Field and Field.respawnAtHeal then pcall(Field.respawnAtHeal) end
+        end
       end
     end
     if session then session:setBusy("none") end

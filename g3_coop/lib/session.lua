@@ -208,8 +208,8 @@ function Session:sendNpcs(map, list)
   if self.state == "connected" then self:_send(self.P.npc(map, list)) end
 end
 
-function Session:ask(id, act)
-  if self.state == "connected" then self:_send(self.P.ask(id, act)) end
+function Session:ask(id, act, t)
+  if self.state == "connected" then self:_send(self.P.ask(id, act, t)) end
 end
 
 function Session:answer(id, ok, why)

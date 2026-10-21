@@ -13,7 +13,8 @@ local Protocol = {}
 -- 6: and level caps (0.7.0)
 -- 7: team battles against the game's trainers (coop_team, act "team")
 -- 8: shared wild encounters (act "wild"), shared trainer credit (coop_credit)
-Protocol.VERSION = 8
+-- 9: trainer fights together (acts "trainer" and "joint", ask carries t)
+Protocol.VERSION = 9
 
 Protocol.HELLO = "coop_hello"
 Protocol.POS = "coop_pos"
@@ -46,7 +47,7 @@ Protocol.MAX_SL_LOG = 2 ^ 20
 local DIRS = { up = true, down = true, left = true, right = true }
 local BUSY = { none = true, battle = true, trade = true, menu = true, script = true }
 local EMOTES = { wave = true }
-local ACTS = { battle = true, trade = true, team = true, wild = true }
+local ACTS = { battle = true, trade = true, team = true, wild = true, trainer = true, joint = true }
 -- why a request was turned down; the HUD words each one
 local DECLINES = { no = true, busy = true, no_mons = true, bad_egg = true,
                    enigma_berry = true, timeout = true, error = true }
@@ -96,8 +97,8 @@ function Protocol.emote(e)
 end
 
 -- id: the requester's request number, also the link channel number
-function Protocol.ask(id, act)
-  return { type = Protocol.ASK, id = id, act = act }
+function Protocol.ask(id, act, t)
+  return { type = Protocol.ASK, id = id, act = act, t = t }
 end
 
 function Protocol.answer(id, ok, why)
@@ -272,7 +273,17 @@ end
 validators[Protocol.ASK] = function(m)
   local id = int(m.id, 1, Protocol.MAX_REQUEST)
   if not (id and ACTS[m.act]) then return nil, "bad_ask" end
-  return { type = m.type, id = id, act = m.act }
+  local out = { type = m.type, id = id, act = m.act }
+  -- the trainer(s) a trainer fight is against: one id, or a pair
+  if m.t ~= nil then
+    if type(m.t) ~= "table" or #m.t < 1 or #m.t > 2 then return nil, "bad_ask" end
+    out.t = {}
+    for i = 1, #m.t do
+      out.t[i] = int(m.t[i], 1, 2 ^ 20)
+      if not out.t[i] then return nil, "bad_ask" end
+    end
+  end
+  return out
 end
 
 validators[Protocol.ANSWER] = function(m)

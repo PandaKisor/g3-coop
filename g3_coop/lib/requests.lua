@@ -12,7 +12,10 @@ Requests.__index = Requests
 -- how long the asker waits for an answer
 Requests.ANSWER_SECONDS = 30
 -- a wild POKeMON is waiting: the asker stands frozen until the answer
-Requests.ANSWER_SECONDS_FOR = { wild = 10 }
+Requests.ANSWER_SECONDS_FOR = { wild = 10, trainer = 10, joint = 15 }
+-- acts the partner joins without being asked: a story fight is a joint
+-- fight, and the gate already checked they're here and free
+Requests.AUTO_ACCEPT = { joint = true }
 -- how long a request may wait for the other player to be free to see it
 -- (mid-step, in a menu, reading a sign) before it is turned down as busy
 Requests.PROMPT_SECONDS = 8
@@ -20,7 +23,8 @@ Requests.PROMPT_SECONDS = 8
 Requests.MENU = { "WAVE", "BATTLE", "TRADE", "CANCEL" }
 local MENU_ACT = { [0] = "wave", [1] = "battle", [2] = "trade" }
 local ACT_WORD = { battle = "battle", trade = "trade", team = "team up against trainers",
-                   wild = "battle the wild POKeMON they found together" }
+                   wild = "battle the wild POKeMON they found together",
+                   trainer = "battle a TRAINER together", joint = "start a fight you both have to be in" }
 
 local DECLINE_TEXT = {
   no = "%s said no.",
@@ -36,7 +40,9 @@ local OWN_TEXT = {
   no_mons = { battle = "You need a POKeMON that can battle.",
               trade = "You need at least two POKeMON to trade.",
               team = "You need a POKeMON that can battle.",
-              wild = "You need a POKeMON that can battle." },
+              wild = "You need a POKeMON that can battle.",
+              trainer = "You need a POKeMON that can battle.",
+              joint = "You need a POKeMON that can battle." },
   bad_egg = "You can't link with a BAD EGG.",
   enigma_berry = "You can't link holding an ENIGMA BERRY.",
 }
@@ -84,7 +90,7 @@ end
 -- onRefused (optional): called once if the request ends without the
 -- partner agreeing -- a no, no answer in time, B to cancel, or the
 -- connection dropping -- so the caller can go on alone
-function Requests:request(act, onRefused)
+function Requests:request(act, onRefused, t)
   local d = self.d
   local s = d.session()
   if not (s and s.state == "connected") or self.outgoing or self.busy then return false end
@@ -97,8 +103,8 @@ function Requests:request(act, onRefused)
   -- the two games number their requests on alternate ids, so a channel
   -- number is never claimed by both
   self.nextId = id + 2
-  self.outgoing = { id = id, act = act, at = d.now(), onRefused = onRefused }
-  s:ask(id, act)
+  self.outgoing = { id = id, act = act, at = d.now(), onRefused = onRefused, t = t }
+  s:ask(id, act, t)
   d.ui.wait("Waiting for " .. self:_name() .. "...\n(B to cancel)", function()
     local out = self.outgoing
     if not (out and out.id == id) then return end
@@ -118,12 +124,12 @@ function Requests:_answerIncoming(yes, why)
   local s = self.d.session()
   if not s then return end
   s:answer(inc.id, yes, why)
-  if yes then self:_start(inc.act, inc.id) end
+  if yes then self:_start(inc.act, inc.id, inc.t) end
 end
 
-function Requests:_start(act, id)
+function Requests:_start(act, id, t)
   self.busy = true
-  self.d.start(act, id)
+  self.d.start(act, id, t)
 end
 
 -- the activity started by _start has ended
@@ -139,7 +145,7 @@ function Requests:_onAsk(msg)
     s:answer(msg.id, false, "busy")
     return
   end
-  self.incoming = { id = msg.id, act = msg.act, at = self.d.now(), shown = false }
+  self.incoming = { id = msg.id, act = msg.act, at = self.d.now(), shown = false, t = msg.t }
 end
 
 function Requests:_onAnswer(msg)
@@ -149,7 +155,7 @@ function Requests:_onAnswer(msg)
   local d = self.d
   d.ui.close()
   if msg.ok then
-    self:_start(out.act, out.id)
+    self:_start(out.act, out.id, out.t)
   else
     d.ui.toast(DECLINE_TEXT[msg.why or "no"]:format(self:_name()))
     if out.onRefused then out.onRefused() end
@@ -173,6 +179,10 @@ function Requests:_showIncoming()
     return self:_answerIncoming(false, why)
   end
   inc.shown = true
+  if Requests.AUTO_ACCEPT[inc.act] then
+    d.ui.toast("Joining " .. self:_name() .. "'s fight!")
+    return self:_answerIncoming(true)
+  end
   d.ui.ask(self:_name() .. " wants to " .. ACT_WORD[inc.act] .. ".\nIs that okay?", function(yes)
     if self.incoming ~= inc then return end
     d.ui.close()

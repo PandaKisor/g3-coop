@@ -180,6 +180,7 @@ do
   local t, sent, waitCancel = 0, {}, nil
   local sess = { state = "connected", P = P, peer = { name = "MAY" },
     ask = function(_, id, act) sent[#sent + 1] = { "ask", id, act } end,
+    answer = function(_, id, ok) sent[#sent + 1] = { "answer", id, ok } end,
     cancelAsk = function(_, id) sent[#sent + 1] = { "cancel", id } end,
     takeRequests = function(self) local l = self.q or {}; self.q = {}; return l end }
   local ui = { menu = function() end, ask = function() end, close = function() end, toast = function() end,
@@ -209,6 +210,21 @@ do
   R:tick()
   T.eq(started, "wild", "a yes starts the shared battle")
   T.eq(alone, 4, "and nothing plays alone")
+  -- trainer fights: the ask carries the trainer(s); a joint fight is joined
+  -- without a prompt
+  local ask = Protocol.validate(Protocol.ask(5, "trainer", { 60616 }))
+  T.eq(ask and ask.t and ask.t[1], 60616, "a trainer fight's ask carries the trainer")
+  T.eq(Protocol.validate(Protocol.ask(5, "trainer", { 1, 2, 3 })), nil, "at most a pair")
+  T.eq(Protocol.validate(Protocol.ask(5, "trainer", { "x" })), nil, "trainer ids are numbers")
+  local startedWith
+  local R2 = Requests.new({ session = function() return sess end, now = function() return t end, firstId = 2, ui = ui,
+    canPrompt = function() return true end, eligible = function() return true end,
+    wave = function() end, start = function(act, _, tt) startedWith = { act, tt } end })
+  sent = {}
+  sess.q = { { type = P.ASK, id = 11, act = "joint", t = { 265 } } }
+  R2:tick()
+  T.eq(startedWith and startedWith[1], "joint", "a joint fight starts without asking")
+  T.eq(startedWith and startedWith[2][1], 265, "against the trainer it named")
 end
 
 -- ------- shared trainer credit

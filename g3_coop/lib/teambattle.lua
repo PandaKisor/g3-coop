@@ -176,11 +176,20 @@ local function hostMapSec(E, session)
   return ok and tonumber(sec) or nil
 end
 
--- The host's setup also carries both foes and the seed.
+-- The host's setup also carries the foes and the seed.  With no second
+-- trainer, one trainer commands both enemy positions from one shared party
+-- (dev.22 coopSharedFoe, COOP.md "One trainer, two enemy positions").
 function TeamBattle.hostSetup(E, session, trainerA, trainerB, seed)
   local side = TeamBattle.mySide(E, session)
   local a, whyA = TeamBattle.foe(E, trainerA)
   if not a then return nil, whyA end
+  if trainerB == nil then
+    side.foes = { a }
+    side.sharedFoe = true
+    side.seed = math.floor(tonumber(seed) or 0) % 4294967296
+    side.mapSec = hostMapSec(E, session)
+    return side
+  end
   local b, whyB = TeamBattle.foe(E, trainerB)
   if not b then return nil, whyB end
   side.foes = { a, b }
@@ -254,23 +263,36 @@ function TeamBattle.begin(E, mine, peer, linkSeat, onDone)
   local LB, TL = E.LB, E.TowerLink
   local host = linkSeat == 0 and mine or peer
   local guest = linkSeat == 0 and peer or mine
-  if type(host.foes) ~= "table" or #host.foes ~= 2 then return nil, "no_foes" end
+  local shared = host.sharedFoe == true
+  if type(host.foes) ~= "table" or #host.foes ~= (shared and 1 or 2) then return nil, "no_foes" end
   local seed = math.floor(tonumber(host.seed) or 0) % 4294967296
   local parties = {}
-  for _, side in ipairs({ host, guest, host.foes[1], host.foes[2] }) do
-    local party, why = checkParty(E, side.party)
-    if not party then return nil, tostring(side.name) .. ": " .. tostring(why) end
-    parties[side] = party
+  for _, side in ipairs({ host, guest, host.foes[1], host.foes[2] or false }) do
+    if side then
+      local party, why = checkParty(E, side.party)
+      if not party then return nil, tostring(side.name) .. ": " .. tostring(why) end
+      parties[side] = party
+    end
   end
-  local function seatSetup(side)
-    return { name = side.name, gender = side.gender, trainerId = side.trainerId, party = parties[side] }
+  local function seatSetup(side, party)
+    return { name = side.name, gender = side.gender, trainerId = side.trainerId, party = party or parties[side] }
   end
   local setups = {
     [TeamBattle.SEAT_OF_PLAYER[0]] = seatSetup(host),
     [TeamBattle.SEAT_OF_PLAYER[1]] = seatSetup(guest),
-    [TeamBattle.FOE_SEATS[1]] = seatSetup(host.foes[1]),
-    [TeamBattle.FOE_SEATS[2]] = seatSetup(host.foes[2]),
   }
+  if shared then
+    -- one trainer's party across both enemy seats: its first mon in seat 3,
+    -- the rest (possibly none) in seat 1; both positions draw from the whole
+    local all = parties[host.foes[1]]
+    local rest = {}
+    for i = 2, #all do rest[#rest + 1] = all[i] end
+    setups[TeamBattle.FOE_SEATS[1]] = seatSetup(host.foes[1], { all[1] })
+    setups[TeamBattle.FOE_SEATS[2]] = seatSetup(host.foes[1], rest)
+  else
+    setups[TeamBattle.FOE_SEATS[1]] = seatSetup(host.foes[1])
+    setups[TeamBattle.FOE_SEATS[2]] = seatSetup(host.foes[2])
+  end
 
   -- the AI's own stream: only the host draws from it, so it must never be
   -- the battle's (tower_link.lua withAiRng)
@@ -309,6 +331,15 @@ function TeamBattle.begin(E, mine, peer, linkSeat, onDone)
   }
   if host.wild then
     opts.wild = true
+  elseif shared then
+    opts.coopSharedFoe = true
+    opts.towerLinkMulti = true
+    opts.aiFlags = foeA.aiFlags
+    opts.trainerItems = { 0, 0, 0, 0 }
+    opts.trainerName = foeA.name
+    opts.trainerPicId = foeA.pic
+    opts.frontierTrainer = row(foeA)
+    opts.defeatText = foeA.defeatText
   else
     opts.towerLinkMulti = true
     opts.aiFlags = foeA.aiFlags
@@ -327,6 +358,8 @@ function TeamBattle.begin(E, mine, peer, linkSeat, onDone)
   local savedUnpack, savedSize = LB.unpackMultiParty, LB.MULTI_PARTY_SIZE
   LB.unpackMultiParty = function(p)
     if type(p) == "table" and hasLiving(E, p) then return p end
+    -- a one-mon trainer leaves the second enemy seat empty
+    if shared and type(p) == "table" and #p == 0 then return p end
     return nil, "no_mons"
   end
   LB.MULTI_PARTY_SIZE = TeamBattle.MAX_PARTY
