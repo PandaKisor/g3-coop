@@ -228,6 +228,30 @@ Total to a solid LAN v1 (M0–M3): about **4–6 weeks**. Online adds M4.
 2. Keep map **symbols** stable once assigned; renumbering is fine,
    renaming is not.
 3. Don't reuse the reserved runtime-object local-ID range chosen for B1.
+4. (2026-10-21) Pin `g3_coop` in the cart. `inclement_emerald.g1rcart` is
+   `sealed`, so the loader disables every mod the cart does not list. Add it
+   after the port in both `mods` and `load_order`:
+   `{ id = "g3_coop", source = "local", version = "<installed co-op version>" }`.
+   A sealed cart also hands pinned mods only the cart's own `options`, never
+   the player's launcher settings, so per-player settings (role, host
+   address) cannot come from the launcher on this cart. That part is co-op's
+   to solve, not the cart's.
+
+## Results on the Inclement cart (2026-10-21, 0.7.2 vs 0.6.0-dev.19)
+
+Two hidden copies of the dev.19 playtest app (Oldale), with a test-only cart
+copy that pins `g3_coop` and passes host/join through pin options:
+
+- Connect, version check, partner card, walking ghost: work.
+- Co-op battle: runs to the end and both sides agree (one win, one loss). It
+  uses the engine's link battle (level 50, Union Room trainer class); the
+  port's `turn_rules.lua` has explicit link-battle branches.
+- Trade: swap shown on both screens and saved on both sides.
+- Soul Link: runs link and the host's rules sync.
+- Level caps: wrong on this cart. It read "cap 5 (RIVAL, ROUTE 103)" for a
+  level-8 party, because `lib/levelcap.lua` uses vanilla Emerald's story list
+  and static trainer levels, while the port scales trainer levels. Needs the
+  campaign's own cap schedule (see the addendum).
 
 ## Open questions / to verify
 
