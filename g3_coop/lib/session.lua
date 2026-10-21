@@ -36,7 +36,7 @@ function Session.new(net, role, localHello, deps)
     net = net, role = role, localHello = localHello,
     P = deps.Protocol, compat = deps.compat, now = now, offsetOf = deps.offsetOf,
     Channel = deps.Channel, channels = {}, requests = {}, early = {}, earlyCount = 0,
-    emotes = 0, lastEmote = nil, npcs = {}, sl = {}, teams = {},
+    emotes = 0, lastEmote = nil, npcs = {}, sl = {}, teams = {}, credits = {},
     presence = deps.Presence.new(), ghost = deps.Ghost.new(),
     state = "waiting", reason = nil, peer = nil, peerBusy = "none", busy = "none",
     helloSent = false, lastHeard = t, lastSent = t, pairedAt = nil,
@@ -109,6 +109,8 @@ function Session:_receive(raw)
         self.early[msg.c] = q
         self.earlyCount = self.earlyCount + 1
       end
+    elseif msg.type == P.CREDIT then
+      if #self.credits < 64 then self.credits[#self.credits + 1] = msg end
     elseif msg.type == P.TEAM then
       -- one setup per channel; a second one for the same number is ignored
       if self.teams[msg.c] == nil then self.teams[msg.c] = msg.d end
@@ -216,6 +218,17 @@ end
 
 function Session:cancelAsk(id)
   if self.state == "connected" then self:_send(self.P.cancel(id)) end
+end
+
+-- shared trainer credit (lib/credit.lua)
+function Session:sendCredit(ids, fresh)
+  if self.state == "connected" then self:_send(self.P.credit(ids, fresh)) end
+end
+
+function Session:takeCredits()
+  local list = self.credits
+  self.credits = {}
+  return list
 end
 
 -- Team battle setups (lib/teambattle.lua) for channel c

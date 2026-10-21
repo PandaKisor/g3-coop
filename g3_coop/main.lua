@@ -32,6 +32,7 @@ return function(mod)
   local TeamBattle = import("lib/teambattle.lua")
   local ConnEdit = import("lib/connedit.lua")
   local TradeFull = import("lib/tradefull.lua")
+  local Credit = import("lib/credit.lua")
 
   mod.options:define(import("options.lua"))
 
@@ -800,6 +801,8 @@ return function(mod)
   -- AUTOCONNECT waits for the overworld: at the title screen no save is
   -- loaded yet, so the hello would carry no trainer name ("PLAYER")
   local autoPending = false
+  -- shared trainer credit, defined with the battle events below
+  local applyCredits
 
   local hinted = false
   local function tick(g)
@@ -859,6 +862,8 @@ return function(mod)
     for _, msg in ipairs(session:takeSoulLink()) do
       tracker:onMessage(msg, session.role == "host")
     end
+    local okC, errC = pcall(applyCredits)
+    if not okC then mod.log:warn("trainer credit: %s", tostring(errC)) end
     if waitCancel and g.input and g.input.wasPressed and g.input:wasPressed("b") then
       local cancel = waitCancel
       waitCancel = nil
@@ -1307,7 +1312,87 @@ return function(mod)
     local ok, err = pcall(tracker.onFainted, tracker, ev)
     if not ok then mod.log:warn("soul link: %s", tostring(err)) end
   end)
+  -- ---------------------------------------------- shared trainer credit
+
+  local credit = Credit.new({
+    read = function()
+      if not game then return nil end
+      local ok, v = pcall(mod.storage.read, mod.storage, game, "credits")
+      return ok and type(v) == "table" and v or nil
+    end,
+    write = function(v) if game then pcall(mod.storage.write, mod.storage, game, "credits", v) end end,
+  })
+  local creditSentTo = nil
+
+  local function trainerInfo(id)
+    local Trainers = engine("scripting.trainers")
+    local ok, info = pcall(Trainers.info, id)
+    return ok and type(info) == "table" and info or {}
+  end
+
+  -- a joint fight (rival, gym, story) is never credited; a cart's mod may
+  -- say which trainers those are (mod.exports.coopStoryTrainer(id) -> bool)
+  local function storyTrainer(id)
+    for mid, ex in pairs(game and game.mods and game.mods.exports or {}) do
+      if mid ~= "g3_coop" and type(ex) == "table" and type(ex.coopStoryTrainer) == "function" then
+        local ok, r = pcall(ex.coopStoryTrainer, id)
+        if ok and type(r) == "boolean" then return r end
+      end
+    end
+    return Credit.isStoryClass(trainerInfo(id).className)
+  end
+
+  local function trainerBeaten(id, set)
+    local Space, Flags = engine("scripting.space"), engine("scripting.flags")
+    if not (Space and Space.store and Flags) then return nil end
+    local ctx = Space.vm and Space.vm.ctx
+    if set then pcall(Flags.setFlag, Space.store, ctx, Flags.trainerFlagId(id), true) end
+    local ok, v = pcall(Flags.getFlag, Space.store, ctx, Flags.trainerFlagId(id))
+    return ok and v == true
+  end
+
+  -- a solo win against an ordinary trainer: ours, and the partner's
+  local function creditWin(st)
+    if type(st) ~= "table" or st.wild or st.link then return end
+    local fresh = {}
+    for _, id in ipairs({ tonumber(st.trainerId), tonumber(st.trainerIdB) }) do
+      if id and not storyTrainer(id) and credit:add(id) then fresh[#fresh + 1] = id end
+    end
+    if #fresh > 0 and session then session:sendCredit(fresh, true) end
+  end
+
+  -- the partner's credits: set the flags this game is missing
+  applyCredits = function()
+    if not (session and gameSession()) then return end
+    for _, msg in ipairs(session:takeCredits()) do
+      for _, id in ipairs(msg.ids) do
+        if not storyTrainer(id) then
+          local had = trainerBeaten(id)
+          if had == false then
+            trainerBeaten(id, true)
+            if msg.fresh then
+              local info = trainerInfo(id)
+              toast(("%s beat %s %s: it counts for you too."):format(
+                tostring(session.peer and session.peer.name or "Your partner"),
+                tostring(info.className or "TRAINER"), tostring(info.name or "")), 5)
+            end
+          end
+          if had ~= nil then credit:add(id) end
+        end
+      end
+    end
+    -- on each new connection the whole list goes across once
+    if creditSentTo ~= session and session.state == "connected" then
+      creditSentTo = session
+      for _, ids in ipairs(credit:chunks(Protocol.MAX_CREDIT_IDS)) do session:sendCredit(ids, false) end
+    end
+  end
+
   mod.events:on("battle.ended", function(ev)
+    if not activity and ev and ev.result == "win" then
+      local ok, err = pcall(creditWin, ev.battle)
+      if not ok then mod.log:warn("trainer credit: %s", tostring(err)) end
+    end
     -- a team battle writes the battle's result back to this player's own
     -- mons (a cable battle never does) and counts both trainers as beaten
     if teamState and activity and activity.kind == "team" and not teamState.written then
@@ -1617,6 +1702,7 @@ return function(mod)
     return ok
   end
   mod.exports.editor = function() return editor end
+  mod.exports.creditList = function() return credit:list() end
   mod.exports.openEditor = function() openEditor() end
   mod.exports.setting = setting
   mod.exports.levelCap = function() stepCaps() return capNow(), capState end

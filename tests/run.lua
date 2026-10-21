@@ -211,6 +211,30 @@ do
   T.eq(alone, 4, "and nothing plays alone")
 end
 
+-- ------- shared trainer credit
+do
+  local Credit = lib("credit")
+  T.check(Credit.isStoryClass("LEADER"), "gym leaders are joint fights")
+  T.check(Credit.isStoryClass("Aqua Admin"), "admins too, any case")
+  T.check(Credit.isStoryClass("PKMN TRAINER"), "and the rival's class")
+  T.check(not Credit.isStoryClass("Youngster"), "route trainers are not")
+  T.check(not Credit.isStoryClass(nil), "nor an unknown class")
+  local store
+  local c = Credit.new({ read = function() return store end, write = function(v) store = v end })
+  T.eq(c:add(60319), true, "a new credit is recorded")
+  T.eq(c:add(60319), false, "once")
+  T.eq(c:add(0), false, "ids are positive")
+  T.eq(c:add(1.5), false, "and whole")
+  for i = 1, 600 do c:add(1000 + i) end
+  local chunks = c:chunks(512)
+  T.eq(#chunks, 2, "the list goes across in message-sized pieces")
+  T.eq(#chunks[1] + #chunks[2], 601, "all of it")
+  local msg = Protocol.validate(Protocol.credit(chunks[1], false))
+  T.check(msg and #msg.ids == 512, "a full piece validates")
+  T.eq(Protocol.validate({ type = "coop_credit", ids = { 1, "2" } }), nil, "string ids are refused")
+  T.eq(Protocol.validate(Protocol.credit({ 60319 }, true)).fresh, true, "a fresh win says so")
+end
+
 -- ------- presence
 
 local player = { cellX = 3, cellY = 4, facing = "down", moving = false, elevation = 3, visible = true }

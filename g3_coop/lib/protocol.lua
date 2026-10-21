@@ -12,7 +12,8 @@ local Protocol = {}
 -- 5: Soul Link hard rules travel with the host's rules (0.6.0)
 -- 6: and level caps (0.7.0)
 -- 7: team battles against the game's trainers (coop_team, act "team")
-Protocol.VERSION = 7
+-- 8: shared wild encounters (act "wild"), shared trainer credit (coop_credit)
+Protocol.VERSION = 8
 
 Protocol.HELLO = "coop_hello"
 Protocol.POS = "coop_pos"
@@ -26,6 +27,8 @@ Protocol.LINK = "coop_link"
 Protocol.NPC = "coop_npc"
 Protocol.SL = "coop_sl"
 Protocol.TEAM = "coop_team"
+Protocol.CREDIT = "coop_credit"
+Protocol.MAX_CREDIT_IDS = 512
 
 Protocol.MAX_NAME = 16
 Protocol.MAX_MAP = 64
@@ -198,6 +201,12 @@ function Protocol.unpackTree(v)
     return out
   end
   return walk(v, 0)
+end
+
+-- trainers beaten alone that count for both (lib/credit.lua); fresh = a win
+-- just now (the partner hears about it), else the list sent on connect
+function Protocol.credit(ids, fresh)
+  return { type = Protocol.CREDIT, ids = ids, fresh = fresh == true or nil }
 end
 
 function Protocol.bye(reason)
@@ -391,6 +400,18 @@ validators[Protocol.TEAM] = function(m)
   local d, why = Protocol.unpackTree(m.d)
   if type(d) ~= "table" then return nil, why or "bad_team" end
   return { type = m.type, c = c, d = d }
+end
+
+validators[Protocol.CREDIT] = function(m)
+  local ids = m.ids
+  if type(ids) ~= "table" or #ids > Protocol.MAX_CREDIT_IDS then return nil, "bad_credit" end
+  local out = {}
+  for i = 1, #ids do
+    local id = int(ids[i], 1, 2 ^ 20)
+    if not id then return nil, "bad_credit" end
+    out[i] = id
+  end
+  return { type = m.type, ids = out, fresh = m.fresh == true }
 end
 
 validators[Protocol.BYE] = function(m)
