@@ -36,7 +36,7 @@ function Session.new(net, role, localHello, deps)
     net = net, role = role, localHello = localHello,
     P = deps.Protocol, compat = deps.compat, now = now, offsetOf = deps.offsetOf,
     Channel = deps.Channel, channels = {}, requests = {}, early = {}, earlyCount = 0,
-    emotes = 0, lastEmote = nil, npcs = {}, sl = {},
+    emotes = 0, lastEmote = nil, npcs = {}, sl = {}, teams = {},
     presence = deps.Presence.new(), ghost = deps.Ghost.new(),
     state = "waiting", reason = nil, peer = nil, peerBusy = "none", busy = "none",
     helloSent = false, lastHeard = t, lastSent = t, pairedAt = nil,
@@ -109,6 +109,9 @@ function Session:_receive(raw)
         self.early[msg.c] = q
         self.earlyCount = self.earlyCount + 1
       end
+    elseif msg.type == P.TEAM then
+      -- one setup per channel; a second one for the same number is ignored
+      if self.teams[msg.c] == nil then self.teams[msg.c] = msg.d end
     elseif msg.type == P.SL then
       if #self.sl < 64 then self.sl[#self.sl + 1] = msg end
     elseif msg.type == P.NPC then
@@ -213,6 +216,17 @@ end
 
 function Session:cancelAsk(id)
   if self.state == "connected" then self:_send(self.P.cancel(id)) end
+end
+
+-- Team battle setups (lib/teambattle.lua) for channel c
+function Session:sendTeam(c, data)
+  if self.state == "connected" then self:_send(self.P.team(c, self.P.packTree(data))) end
+end
+
+function Session:takeTeam(c)
+  local d = self.teams[c]
+  self.teams[c] = nil
+  return d
 end
 
 -- A link transport for activity c (see lib/channel.lua).  Opening a number

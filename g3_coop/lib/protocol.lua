@@ -11,7 +11,8 @@ local Protocol = {}
 -- 4: Soul Link run sync (coop_sl) (0.5.0)
 -- 5: Soul Link hard rules travel with the host's rules (0.6.0)
 -- 6: and level caps (0.7.0)
-Protocol.VERSION = 6
+-- 7: team battles against the game's trainers (coop_team, act "team")
+Protocol.VERSION = 7
 
 Protocol.HELLO = "coop_hello"
 Protocol.POS = "coop_pos"
@@ -24,6 +25,7 @@ Protocol.CANCEL = "coop_cancel"
 Protocol.LINK = "coop_link"
 Protocol.NPC = "coop_npc"
 Protocol.SL = "coop_sl"
+Protocol.TEAM = "coop_team"
 
 Protocol.MAX_NAME = 16
 Protocol.MAX_MAP = 64
@@ -41,7 +43,7 @@ Protocol.MAX_SL_LOG = 2 ^ 20
 local DIRS = { up = true, down = true, left = true, right = true }
 local BUSY = { none = true, battle = true, trade = true, menu = true, script = true }
 local EMOTES = { wave = true }
-local ACTS = { battle = true, trade = true }
+local ACTS = { battle = true, trade = true, team = true }
 -- why a request was turned down; the HUD words each one
 local DECLINES = { no = true, busy = true, no_mons = true, bad_egg = true,
                    enigma_berry = true, timeout = true, error = true }
@@ -122,6 +124,80 @@ end
 function Protocol.sl(f)
   return { type = Protocol.SL, hi = f.hi == true or nil, run = f.run, tid = f.tid,
            nm = f.nm, pt = f.pt, rules = f.rules, from = f.from, want = f.want, ev = f.ev }
+end
+
+-- A team battle's setup for channel c (lib/teambattle.lua): plain data
+-- (names, parties, the host's foes and seed) packed by Protocol.packTree.
+function Protocol.team(c, d)
+  return { type = Protocol.TEAM, c = c, d = d }
+end
+
+-- Plain Lua data <-> JSON-safe trees.  JSON loses the difference between
+-- an array and a table with number keys (a party slot's moves, a sparse
+-- table), so every table travels as a list of {key, value} pairs.  Only
+-- numbers, strings, booleans and tables survive; functions, userdata and
+-- anything deeper than MAX_TREE_DEPTH are dropped.
+Protocol.MAX_TREE_DEPTH = 8
+Protocol.MAX_TREE_NODES = 20000
+Protocol.MAX_TREE_STRING = 200
+
+function Protocol.packTree(v, depth)
+  depth = depth or 0
+  local t = type(v)
+  if t == "number" then
+    if v ~= v or v == math.huge or v == -math.huge then return nil end
+    return v
+  end
+  if t == "string" then return v:sub(1, Protocol.MAX_TREE_STRING) end
+  if t == "boolean" then return v end
+  if t ~= "table" or depth >= Protocol.MAX_TREE_DEPTH then return nil end
+  local out = {}
+  for k, val in pairs(v) do
+    local kt = type(k)
+    if (kt == "string" and #k <= 64) or (kt == "number" and k == math.floor(k) and math.abs(k) <= 1e6) then
+      local packed = Protocol.packTree(val, depth + 1)
+      if packed ~= nil then out[#out + 1] = { k, packed } end
+    end
+  end
+  return { ["~"] = out }
+end
+
+-- the reverse, validating as it goes: nil plus a reason on anything that
+-- Protocol.packTree could not have produced
+function Protocol.unpackTree(v)
+  local nodes = 0
+  local function walk(x, depth)
+    nodes = nodes + 1
+    if nodes > Protocol.MAX_TREE_NODES then return nil, "too_big" end
+    local t = type(x)
+    if t == "number" then
+      if x ~= x or x == math.huge or x == -math.huge then return nil, "bad_number" end
+      return x
+    end
+    if t == "string" then
+      if #x > Protocol.MAX_TREE_STRING then return nil, "long_string" end
+      return x
+    end
+    if t == "boolean" then return x end
+    if t ~= "table" or depth >= Protocol.MAX_TREE_DEPTH then return nil, "bad_tree" end
+    local pairsList = x["~"]
+    if type(pairsList) ~= "table" then return nil, "bad_tree" end
+    local out = {}
+    for _, kv in ipairs(pairsList) do
+      if type(kv) ~= "table" then return nil, "bad_tree" end
+      local k = kv[1]
+      local kt = type(k)
+      if not ((kt == "string" and #k <= 64)
+              or (kt == "number" and k == math.floor(k) and math.abs(k) <= 1e6)) then
+        return nil, "bad_key"
+      end
+      local val, why = walk(kv[2], depth + 1)
+      if val == nil then return nil, why end
+      out[k] = val
+    end
+    return out
+  end
+  return walk(v, 0)
 end
 
 function Protocol.bye(reason)
@@ -307,6 +383,14 @@ validators[Protocol.SL] = function(m)
     out.ev[i] = e
   end
   return out
+end
+
+validators[Protocol.TEAM] = function(m)
+  local c = int(m.c, 1, Protocol.MAX_REQUEST)
+  if not c then return nil, "bad_team" end
+  local d, why = Protocol.unpackTree(m.d)
+  if type(d) ~= "table" then return nil, why or "bad_team" end
+  return { type = m.type, c = c, d = d }
 end
 
 validators[Protocol.BYE] = function(m)

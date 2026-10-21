@@ -49,6 +49,35 @@ T.eq(why, "protocol_version", "a newer protocol is named as such")
 T.eq(Protocol.validate(posMsg({ sf = true })).sf, true, "a surfing partner says so")
 T.eq(Protocol.validate(posMsg({ sf = "yes" })).sf, false, "anything but true is not surfing")
 
+-- team battle setups: plain data through JSON and back, intact
+do
+  local Json = require("src.link.Json")
+  local mon = { species = 559, level = 6, moves = { 336, 33 }, pp = { [1] = 20, [3] = 5 },
+                ivs = { hp = 31, atk = 0 }, nickname = "", isEgg = false, personality = 4294967295,
+                fn = function() end }
+  local wire = Json.decode(Json.encode(Protocol.team(3, Protocol.packTree({ name = "MAY", party = { mon } }))))
+  local msg = Protocol.validate(wire)
+  T.check(msg ~= nil, "a team setup survives JSON and validates")
+  local back = msg and msg.d.party[1]
+  T.eq(back and back.species, 559, "an expanded species survives")
+  T.eq(back and back.moves[1], 336, "moves survive")
+  T.eq(back and back.pp[3], 5, "a sparse number-keyed table keeps its keys")
+  T.eq(back and back.pp[2], nil, "and its holes")
+  T.eq(back and back.isEgg, false, "false survives")
+  T.eq(back and back.fn, nil, "functions are dropped")
+  T.eq(back and back.personality, 4294967295, "32-bit values survive")
+  T.eq(Protocol.validate({ type = "coop_team", c = 3, d = { party = {} } }), nil, "raw tables are refused")
+  local deep = {}
+  local cur = deep
+  for _ = 1, 20 do cur.x = {}; cur = cur.x end
+  local packed = Protocol.packTree(deep)
+  local _, whyDeep = Protocol.unpackTree({ ["~"] = { { "x", { ["~"] = { { "x", packed } } } } } })
+  T.check(whyDeep ~= nil, "too-deep trees are refused")
+  T.eq(Protocol.validate({ type = "coop_team", c = 3,
+    d = { ["~"] = { { "name", string.rep("A", 300) } } } }), nil, "long strings are refused")
+  T.eq(Protocol.validate({ type = "coop_ask", id = 5, act = "team" }).act, "team", "a team request validates")
+end
+
 -- ------- presence
 
 local player = { cellX = 3, cellY = 4, facing = "down", moving = false, elevation = 3, visible = true }

@@ -28,6 +28,7 @@ return function(mod)
   local Tracker = import("lib/tracker.lua")
   local Hud = import("lib/hud.lua")
   local LevelCap = import("lib/levelcap.lua")
+  local TeamBattle = import("lib/teambattle.lua")
 
   mod.options:define(import("options.lua"))
 
@@ -382,7 +383,35 @@ return function(mod)
   -- whether this game can take part in act right now: the same checks the
   -- Union Room makes before it offers a battle, and the Trade Center's
   -- two-POKeMON rule
+  -- the host's pick for the next team battle: { a = trainer id, b = trainer id }
+  local pendingTeam = nil
+  -- the team battle in progress: { slots, foes, written }
+  local teamState = nil
+
+  local function teamEngine()
+    return {
+      LB = engine("link.battle"), TowerLink = engine("link.tower_link"),
+      Trainers = engine("scripting.trainers"), TextIR = engine("scripting.text_ir"),
+      Party = engine("party"), Space = engine("scripting.space"), Flags = engine("scripting.flags"),
+      Rng = engine("rng"), Pokemon = engine("pokemon"), Damage = engine("battle.damage"),
+    }
+  end
+
+  local function hasLivingMon()
+    local LB = engine("link.battle")
+    local Runtime = engine("runtime")
+    local s = Runtime and Runtime.getSession and Runtime.getSession()
+    for _, mon in ipairs(s and s.party or {}) do
+      if LB and LB.eligible(mon) and (tonumber(mon.hp) or 0) > 0 then return true end
+    end
+    return false
+  end
+
   local function eligible(act)
+    if act == "team" then
+      if not hasLivingMon() then return false, "no_mons" end
+      return true
+    end
     if act == "battle" then
       local LB, Link = engine("link.battle"), engine("link")
       if not (LB and Link) then return false, "error" end
@@ -411,14 +440,46 @@ return function(mod)
     native_version_mismatch = "different engine",
   }
 
+  -- what lib/activity.lua needs for a team battle on channel id
+  local function teamDeps(s, id)
+    local E = teamEngine()
+    local seat = s.role == "host" and 0 or 1
+    local pick = pendingTeam
+    pendingTeam = nil
+    teamState = { slots = nil, foes = nil, written = nil }
+    return {
+      mine = function()
+        local gs = gameSession()
+        if not gs then return nil, "error" end
+        local setup, why
+        if seat == 0 then
+          if not pick then return nil, "error" end
+          local seed = math.floor((os.time() * 7919 + clock() * 1000003)) % 4294967296
+          setup, why = TeamBattle.hostSetup(E, gs, pick.a, pick.b, seed)
+        else
+          setup = TeamBattle.mySide(E, gs)
+        end
+        if setup then teamState.slots = setup.slots end
+        return setup, why
+      end,
+      send = function(setup) s:sendTeam(id, setup) end,
+      take = function() return s:takeTeam(id) end,
+      begin = function(mine, peer, onDone)
+        teamState.foes = (seat == 0 and mine or peer).foes
+        return TeamBattle.begin(E, mine, peer, seat, onDone)
+      end,
+    }
+  end
+
   local function startActivity(act, id)
     local s = session
     local ch = s:openChannel(id)
-    s:setBusy(act)
+    if act == "team" then ch.peerSeat = s.role == "host" and 1 or 0 end
+    s:setBusy(act == "team" and "battle" or act)
     local mine
     mine = Activity.new({
       kind = act, seat = s.role == "host" and 0 or 1, channel = ch, game = game,
-      now = clock, E = activityEngine(),
+      now = clock, E = activityEngine(), team = act == "team" and teamDeps(s, id) or nil,
       onEnd = function(result, why)
         if activity == mine then activity = nil end
         if session == s then
@@ -426,9 +487,10 @@ return function(mod)
           s:setBusy("none")
         end
         if requests then requests:finished() end
+        if act == "team" then teamState = nil end
         if result == nil then
-          toast("Couldn't " .. act .. ": " .. tostring(WHY_TEXT[why] or why))
-        elseif act == "battle" then
+          toast("Couldn't " .. (act == "team" and "team up" or act) .. ": " .. tostring(WHY_TEXT[why] or why))
+        elseif act == "battle" or act == "team" then
           toast(RESULT_TEXT[result] or ("Battle over (" .. tostring(result) .. ")."))
         elseif result == 1 then
           toast("Traded 1 POKeMON.")
@@ -1001,6 +1063,23 @@ return function(mod)
     if not ok then mod.log:warn("soul link: %s", tostring(err)) end
   end)
   mod.events:on("battle.ended", function(ev)
+    -- a team battle writes the battle's result back to this player's own
+    -- mons (a cable battle never does) and counts both trainers as beaten
+    if teamState and activity and activity.kind == "team" and not teamState.written then
+      local E, gs = teamEngine(), gameSession()
+      local ok, n = pcall(TeamBattle.writeback, E, gs, ev and ev.battle, teamState.slots)
+      teamState.written = ok and n or 0
+      if not ok then mod.log:warn("team battle writeback: %s", tostring(n)) end
+      if ev and ev.result == "win" then pcall(TeamBattle.markBeaten, E, teamState.foes) end
+      -- a lost team battle whites out both players, each in their own game
+      -- (battle_bridge.lua does this for a normal battle; it never does for
+      -- a link battle)
+      if ev and (ev.result == "lose" or ev.result == "whiteout") then
+        local B, Field = engine("battle_bridge"), engine("field")
+        if B and B.applyWhiteoutMoneyLoss then pcall(B.applyWhiteoutMoneyLoss, gs, game and game.save) end
+        if Field and Field.respawnAtHeal then pcall(Field.respawnAtHeal) end
+      end
+    end
     if session then session:setBusy("none") end
     local ok, err = pcall(tracker.onBattleEnded, tracker, ev)
     if not ok then mod.log:warn("soul link: %s", tostring(err)) end
@@ -1268,6 +1347,16 @@ return function(mod)
   mod.exports.npcs = function() return npcs end
   mod.exports.tracker = function() return tracker end
   mod.exports.card = cardInfo
+  -- prototype entry for team battles until there is a menu for it: the
+  -- host picks two trainers by id and asks the partner
+  mod.exports.teamBattle = function(trainerA, trainerB)
+    if not (session and session.role == "host" and requests) then return false, "not_host" end
+    pendingTeam = { a = tonumber(trainerA), b = tonumber(trainerB) }
+    local ok = requests:request("team")
+    if not ok then pendingTeam = nil end
+    return ok
+  end
+  mod.exports.teamState = function() return teamState end
   mod.exports.levelCap = function() stepCaps() return capNow(), capState end
   mod.exports.menu = function(g) coopMenu(g) end
 end

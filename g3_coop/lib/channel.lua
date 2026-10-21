@@ -33,9 +33,15 @@ function Channel:send(msg)
   self._send(self.c, msg)
 end
 
--- from the session: one inner message that arrived for this channel
+-- from the session: one inner message that arrived for this channel.
+-- With peerSeat set (a team battle), a message that names no seat gets the
+-- partner's: the relay stamps every message with its sender's seat
+-- (relay_transport.lua), and the link multi battle files each action under
+-- that seat; a direct link has no relay to do it.
 function Channel:push(msg)
-  if not self.closed then self.inbox[#self.inbox + 1] = msg end
+  if self.closed then return end
+  if self.peerSeat ~= nil and type(msg) == "table" and msg.seat == nil then msg.seat = self.peerSeat end
+  self.inbox[#self.inbox + 1] = msg
 end
 
 function Channel:close()

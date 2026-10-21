@@ -6,10 +6,13 @@
 --   battle: link/battle.lua startUnionRoomBattle, the Union Room battle (a
 --           single battle, parties healed first and restored afterwards);
 --   trade:  link/trade.lua startMenu, the Trade Center's trade screen, which
---           repeats until both players choose CANCEL.
+--           repeats until both players choose CANCEL;
+--   team:   both players against two of the game's trainers
+--           (lib/teambattle.lua): the two setups cross on the co-op session,
+--           then the engine's link multi battle runs on this link.
 --
--- Stages: "link" (handshake) -> "setup" (battle parties) -> "battle" /
--- "trade" -> "done".
+-- Stages: "link" (handshake) -> "setup" (battle parties; for a team battle
+-- the setups) -> "battle" / "trade" -> "done".
 
 local Activity = {}
 Activity.__index = Activity
@@ -18,15 +21,18 @@ Activity.LINK_SECONDS = 15
 Activity.SETUP_SECONDS = 30
 Activity.LOCK = "g3coop"
 
--- opts: { kind = "battle"|"trade", seat = 0|1, channel, game, now,
+-- opts: { kind = "battle"|"trade"|"team", seat = 0|1, channel, game, now,
 --         E = engine modules { Link, LB, LT, Game3Link, Message, Field,
---         TradeMenu }, onEnd = fn(result, why) }
+--         TradeMenu }, onEnd = fn(result, why),
+--         team = { mine = fn() -> setup or nil, why; send = fn(setup);
+--                  take = fn() -> the partner's setup or nil;
+--                  begin = fn(mine, peer, onDone(word)) -> ok, why } }
 -- result: "win"/"lose"/"draw" for a battle, the number of mons traded for
 -- a trade, nil when it never started (why says why)
 function Activity.new(opts)
   return setmetatable({
     kind = opts.kind, seat = opts.seat, channel = opts.channel, game = opts.game,
-    E = opts.E, now = opts.now, onEnd = opts.onEnd,
+    E = opts.E, now = opts.now, onEnd = opts.onEnd, team = opts.team,
     stage = "new", startedAt = nil, live = nil, word = nil, traded = 0,
   }, Activity)
 end
@@ -38,8 +44,8 @@ function Activity:start()
   if E.Field then E.Field.lock(Activity.LOCK) end
   E.Message.show("Linking with your partner...\nPlease wait.", { stay = true })
   local L = E.Link
-  local linkType = self.kind == "battle" and E.Game3Link.LINKTYPE.BATTLE
-    or E.Game3Link.LINKTYPE.TRADE_SETUP
+  local linkType = self.kind == "trade" and E.Game3Link.LINKTYPE.TRADE_SETUP
+    or E.Game3Link.LINKTYPE.BATTLE
   local live, why = L.open({
     transport = self.channel, seat = self.seat, seats = 2,
     linkType = linkType, game = self.game,
@@ -61,6 +67,15 @@ end
 
 function Activity:_begin()
   local E = self.E
+  if self.kind == "team" then
+    -- the "Linking..." box stays up until the battle takes the screen
+    local mine, why = self.team.mine()
+    if not mine then return self:_end(nil, why or "setup_failed") end
+    self.mine = mine
+    self.team.send(mine)
+    self.stage, self.startedAt = "setup", self.now()
+    return true
+  end
   self:_clearWait()
   if self.kind == "battle" then
     local ok, err = E.LB.startUnionRoomBattle(function(word)
@@ -99,6 +114,20 @@ function Activity:step()
     if t - self.startedAt > Activity.LINK_SECONDS then
       return self:_end(nil, "link_timeout")
     end
+  elseif stage == "setup" and self.kind == "team" then
+    if not self.live:isOpen() then return self:_end(nil, self.live.reason or "link_closed") end
+    local peer = self.team.take()
+    if peer then
+      self:_clearWait()
+      local ok, why = self.team.begin(self.mine, peer, function(word)
+        self.word = word or "draw"
+        self.stage = "ending"
+      end)
+      if not ok then return self:_end(nil, why or "setup_failed") end
+      if self.stage ~= "ending" then self.stage = "battle" end
+    elseif t - self.startedAt > Activity.SETUP_SECONDS then
+      return self:_end(nil, "setup_timeout")
+    end
   elseif stage == "setup" then
     local LB = E.LB
     if LB.state == "setup" then LB.pumpUnionSetup() end
@@ -133,7 +162,7 @@ function Activity:step()
     end
   end
   if self.stage == "ending" then
-    if self.kind == "battle" then return self:_end(self.word) end
+    if self.kind ~= "trade" then return self:_end(self.word) end
     return self:_end(self.traded)
   end
 end
@@ -144,7 +173,7 @@ function Activity:abort(why)
   if self.stage == "done" then return end
   if self.stage == "link" or self.stage == "new" then return self:_end(nil, why or "aborted") end
   if self.stage == "setup" then
-    if self.E.LB.state == "setup" then self.E.LB.refuse(why or "aborted") end
+    if self.kind ~= "team" and self.E.LB.state == "setup" then self.E.LB.refuse(why or "aborted") end
     return self:_end(nil, why or "aborted")
   end
 end

@@ -17,7 +17,7 @@ Requests.PROMPT_SECONDS = 8
 
 Requests.MENU = { "WAVE", "BATTLE", "TRADE", "CANCEL" }
 local MENU_ACT = { [0] = "wave", [1] = "battle", [2] = "trade" }
-local ACT_WORD = { battle = "battle", trade = "trade" }
+local ACT_WORD = { battle = "battle", trade = "trade", team = "team up against trainers" }
 
 local DECLINE_TEXT = {
   no = "%s said no.",
@@ -31,7 +31,8 @@ local DECLINE_TEXT = {
 
 local OWN_TEXT = {
   no_mons = { battle = "You need a POKeMON that can battle.",
-              trade = "You need at least two POKeMON to trade." },
+              trade = "You need at least two POKeMON to trade.",
+              team = "You need a POKeMON that can battle." },
   bad_egg = "You can't link with a BAD EGG.",
   enigma_berry = "You can't link holding an ENIGMA BERRY.",
 }
