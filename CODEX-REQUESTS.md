@@ -85,6 +85,24 @@ The battle itself ran with 4 + 4. The in-battle party menu in a multi battle
 lays out 3 + 3. Please make it list the local player's own mons, up to six,
 when `st.multi` is set.
 
+## 8. Disconnect fallback in a shared battle (D4, later)
+
+Today, when a partner drops mid team battle, the remaining game ends the
+battle as a draw after the link timeout (about 9 s). It returns to the field
+with its own damage kept and no trainer credit (tested). The agreed design
+needs engine support:
+
+- a way to keep a link multi battle waiting (paused) past the link timeout,
+  so co-op can show a "waiting for partner / continue alone" choice;
+- "continue alone": turn the battle into a local double for the remaining
+  player. The partner's active mon leaves the field, the remaining player
+  sends one of their own into that position and controls both, and the
+  three-faint limit is lifted. Foe AI keeps running locally from the same
+  battle state.
+
+A fallback win in a rival, gym or story fight keeps its rewards and shared
+credit (co-op syncs the flags when the partner reconnects).
+
 ## 7. Level caps for the campaign (optional, later)
 
 Co-op's Soul Link level caps use vanilla story lists, which don't fit the
