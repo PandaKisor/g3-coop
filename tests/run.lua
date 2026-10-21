@@ -132,6 +132,29 @@ do
   undo()
   T.eq(LT.unpackMon(packed), "vanilla", "uninstall puts the engine's unpack back")
 end
+do
+  local TradeFull = lib("tradefull")
+  local full = { species = 559, personality = 7, otId = 1, otSecretId = 2, level = 8, hp = 3, maxHp = 24,
+                 moves = { 574, 43 }, pp = { 1, 1 }, status = "psn" }
+  local packet = { species = 559, personality = 7, otId = 1, otSecretId = 2, hp = 24, status = "",
+                   moves = { { id = 574, pp = 10 }, { id = 43, pp = 30 } } }
+  local LB = { unpackParty = function() return "vanilla" end, unpackOpts = function() return {} end }
+  local E = { Pokemon = { applyStats = function(m) m.maxHp = 100 end, growthRate = function() return 0 end },
+              SummaryData = { expForLevel = function(_, l) return l * 1000 end } }
+  local undo = TradeFull.installBattle(LB, TradeFull.lookup({ tradeParty = { full } }, nil), E)
+  local got = LB.unpackParty({ packet })
+  T.eq(got and got[1].moves[1], 574, "battle parties come back whole")
+  T.eq(got and got[1].hp, 24, "with the packet's (healed) HP")
+  T.eq(got and got[1].status, nil, "and status")
+  T.eq(got and got[1].pp[2], 30, "and PP")
+  got = LB.unpackParty({ packet }, { forceLevel = 50 })
+  T.eq(got and got[1].level, 50, "a forced level applies")
+  T.eq(got and got[1].exp, 50000, "with its EXP")
+  T.eq(got and got[1].hp, 100, "and stats worked out again")
+  T.eq(LB.unpackParty({ packet, { personality = 99 } }), "vanilla", "one unknown mon sends the party to the engine")
+  undo()
+  T.eq(LB.unpackParty({ packet }), "vanilla", "uninstall restores the engine's")
+end
 
 -- ------- presence
 

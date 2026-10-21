@@ -543,11 +543,11 @@ return function(mod)
   local function startActivity(act, id)
     local s = session
     local ch = s:openChannel(id)
-    if act == "trade" then
+    if act == "trade" or act == "battle" then
       -- whole parties first, ahead of the engine's own link messages
       endTradeFull()
       local mine = TradeFull.side(gameSession())
-      tradeFull = { id = id, mine = mine }
+      tradeFull = { id = id, mine = mine, act = act }
       s:sendTeam(id, mine)
     end
     if act == "team" then ch.peerSeat = s.role == "host" and 1 or 0 end
@@ -564,7 +564,7 @@ return function(mod)
         end
         if requests then requests:finished() end
         if act == "team" then teamState = nil end
-        if act == "trade" then endTradeFull() end
+        if act == "trade" or act == "battle" then endTradeFull() end
         if result == nil then
           toast("Couldn't " .. (act == "team" and "team up" or act) .. ": " .. tostring(WHY_TEXT[why] or why))
         elseif act == "battle" or act == "team" then
@@ -754,9 +754,19 @@ return function(mod)
   local function stepActivity()
     if tradeFull and not tradeFull.uninstall and session then
       local peer = session:takeTeam(tradeFull.id)
-      local LT = engine("link.trade")
-      if peer and LT then
-        tradeFull.uninstall = TradeFull.install(LT, TradeFull.lookup(tradeFull.mine, peer))
+      if peer then
+        local byKey = TradeFull.lookup(tradeFull.mine, peer)
+        if tradeFull.act == "battle" then
+          local LB = engine("link.battle")
+          local okS, SummaryData = pcall(require, "src.core.game3.summary_data")
+          if LB then
+            tradeFull.uninstall = TradeFull.installBattle(LB, byKey,
+              { Pokemon = engine("pokemon"), SummaryData = okS and SummaryData or nil })
+          end
+        else
+          local LT = engine("link.trade")
+          if LT then tradeFull.uninstall = TradeFull.install(LT, byKey) end
+        end
       end
     end
     if not activity then return end

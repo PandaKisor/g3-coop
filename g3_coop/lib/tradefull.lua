@@ -78,4 +78,52 @@ function TradeFull.install(LT, byKey)
   end
 end
 
+-- The same for a co-op battle (link/battle.lua): both parties are read
+-- through LB.unpackParty.  Each packet's battle state (HP, status, PP: the
+-- link battle heals parties before packing them) goes onto the whole mon,
+-- and a forced level (the link battle's level 50) is applied the way the
+-- strict unpack applies it, with stats worked out again at that level.
+-- E: { Pokemon, SummaryData }.  Any mon the lookup doesn't know sends the
+-- whole party through the engine's unpack.
+function TradeFull.installBattle(LB, byKey, E)
+  local original = LB.unpackParty
+  LB.unpackParty = function(packed, opts)
+    if type(packed) ~= "table" or #packed == 0 or #packed > 6 then return original(packed, opts) end
+    opts = opts or (LB.unpackOpts and LB.unpackOpts()) or {}
+    local out = {}
+    for i = 1, #packed do
+      local p = packed[i]
+      local whole = byKey[TradeFull.key(p)]
+      if not whole then return original(packed, opts) end
+      local m = plainCopy(whole)
+      m.hp, m.status = tonumber(p.hp) or m.hp, p.status
+      if p.status == "" then m.status = nil end
+      for slot, entry in ipairs(type(p.moves) == "table" and p.moves or {}) do
+        if type(m.pp) == "table" and type(entry) == "table" and tonumber(entry.pp) then m.pp[slot] = entry.pp end
+      end
+      local force = tonumber(opts.forceLevel)
+      if force and E.Pokemon and E.Pokemon.applyStats then
+        m.level = math.max(1, math.min(100, math.floor(force)))
+        if E.SummaryData and E.Pokemon.growthRate then
+          m.exp = E.SummaryData.expForLevel(E.Pokemon.growthRate(m.species), m.level)
+        end
+        E.Pokemon.applyStats(m)
+        m.hp = m.maxHp
+      end
+      local item = tonumber(m.item or m.heldItem) or 0
+      m.item, m.heldItem = item, item
+      if LB.applyLinkStats then
+        local linked = LB.applyLinkStats(m)
+        if not linked then return original(packed, opts) end
+        m = linked
+      end
+      out[i] = m
+    end
+    return out
+  end
+  return function()
+    if LB.unpackParty ~= original then LB.unpackParty = original end
+  end
+end
+
 return TradeFull
