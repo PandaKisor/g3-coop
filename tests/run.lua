@@ -78,6 +78,41 @@ do
   T.eq(Protocol.validate({ type = "coop_ask", id = 5, act = "team" }).act, "team", "a team request validates")
 end
 
+-- ------- CO-OP > ADDRESS
+do
+  local ConnEdit = lib("connedit")
+  local ed = ConnEdit.new({ address = "192.168.4.32:7791", onload = "JOIN" })
+  T.eq(ed:address(), "192.168.4.32", "an address with a port splits")
+  T.eq(ed.port, 7791, "and keeps its port")
+  T.eq(ed.onload, "JOIN", "on-load choice is read back")
+  local fresh = ConnEdit.new({ address = "not an ip", port = 7777 })
+  T.eq(fresh:address(), "127.0.0.1", "a bad address falls back to this PC")
+  ed:press("down")
+  T.eq(ed.ip[1], 191, "DOWN lowers the selected number")
+  ed:press("1"); ed:press("0")
+  T.eq(ed.ip[1], 10, "typing replaces the number")
+  ed:press("9"); ed:press("9")
+  T.eq(ed.ip[1], 9, "typing past 255 starts over")
+  ed:press("left")
+  T.eq(ed.cursor, 6, "LEFT from the first field wraps to on-load")
+  ed:press("up")
+  T.eq(ed.onload, "OFF", "UP cycles on-load")
+  ed:press("right"); ed:press("down")
+  T.eq(ed.ip[1], 8, "fields wrap the other way too")
+  ed.cursor = 4
+  ed:press("up10"); ed:press("up10"); ed:press("up10")
+  T.eq(ed.ip[4], 62, "L/R move by ten")
+  ed.ip[4] = 0
+  ed:press("down")
+  T.eq(ed.ip[4], 255, "numbers wrap")
+  ed.cursor = 5
+  ed:press("back"); ed:press("back"); ed:press("back")
+  T.eq(ed.port, 7, "backspace drops digits")
+  T.eq(ed:result().port, 1024, "a short port is pulled up to the minimum")
+  T.eq(ed:press("confirm"), "save", "A saves")
+  T.eq(ed:press("cancel"), "cancel", "B cancels")
+end
+
 -- ------- presence
 
 local player = { cellX = 3, cellY = 4, facing = "down", moving = false, elevation = 3, visible = true }
@@ -694,10 +729,21 @@ if ChoiceUi.active then ChoiceUi.reset() end
 items[2].onSelect()
 Runtime.call("input.step", function() end, { phase = "field" }, 1 / 60)
 T.check(ChoiceUi.active and ChoiceUi.options[1] == "HOST" and ChoiceUi.options[2] == "JOIN"
-  and ChoiceUi.options[3] == "SOUL LINK", "CO-OP offers HOST / JOIN / SOUL LINK")
-ChoiceUi.autoPick(3)
+  and ChoiceUi.options[3] == "ADDRESS" and ChoiceUi.options[4] == "SOUL LINK",
+  "CO-OP offers HOST / JOIN / ADDRESS / SOUL LINK")
+ChoiceUi.autoPick(4)
 T.check(not ChoiceUi.active and not MessageUi.isOpen(), "CANCEL closes it")
 T.check(exports.session() == nil, "and connects nothing")
+items[2].onSelect()
+Runtime.call("input.step", function() end, { phase = "field" }, 1 / 60)
+ChoiceUi.autoPick(2)
+T.check(exports.editor() ~= nil, "ADDRESS opens the address screen")
+T.eq(Runtime.call("input.key", function() return "vanilla" end, {}, { phase = "pressed", key = "up" }), true,
+  "which takes the keys")
+T.eq(Runtime.call("input.gamepad", function() return "vanilla" end, {}, { phase = "pressed", button = "dpdown" }),
+  true, "and the buttons")
+Runtime.call("input.key", function() end, {}, { phase = "pressed", key = "escape" })
+T.eq(exports.editor(), nil, "B / Esc closes it without saving")
 local card = exports.card()
 T.check(card == nil or card.dot == "off", "with nothing connected the card at most shows the last status")
 T.check(require("src.core.game3.item_use")._g3coopRevive ~= nil, "revives pass through the hard-rules check")

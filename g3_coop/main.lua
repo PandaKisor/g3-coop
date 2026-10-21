@@ -1,8 +1,9 @@
 -- Gen 3 co-op: two players, each on their own save, see each other in the
 -- same overworld.  One hosts, the other joins by address, over the engine's
 -- own link transport (src/link/Net.lua, ENet on UDP).  START > CO-OP hosts,
--- joins or leaves (the join address is set in the launcher's settings); F8
--- connects or disconnects in one key.  F7 (or START > CO-OP > SOUL LINK)
+-- joins or leaves, and ADDRESS sets the host's address and what to do on
+-- load (kept in this player's save; the launcher's settings are the
+-- fallback); F8 connects or disconnects in one key.  F7 (or START > CO-OP > SOUL LINK)
 -- shows the Soul Link run.
 --
 -- The partner is drawn on your screen (on your map or a connected one).
@@ -29,15 +30,43 @@ return function(mod)
   local Hud = import("lib/hud.lua")
   local LevelCap = import("lib/levelcap.lua")
   local TeamBattle = import("lib/teambattle.lua")
+  local ConnEdit = import("lib/connedit.lua")
 
   mod.options:define(import("options.lua"))
+
+  -- Connection settings: this player's own choices (CO-OP > ADDRESS and
+  -- HOST/JOIN, kept in their save) over the launcher's.  A sealed cart
+  -- hands its mods only the cart's options, the same for both players, so
+  -- on a cart the launcher can't say who hosts or where the host is.
+  local game
+  local function connStored()
+    if not game then return nil end
+    local ok, v = pcall(mod.storage.read, mod.storage, game, "conn")
+    return ok and type(v) == "table" and v or nil
+  end
+  local function connWrite(v)
+    if game then pcall(mod.storage.write, mod.storage, game, "conn", v) end
+  end
+  local function setting(key)
+    local c = connStored()
+    if c then
+      if key == "address" and type(c.address) == "string" then return c.address end
+      if key == "port" and tonumber(c.port) then return tonumber(c.port) end
+      if key == "autoconnect" and c.onload then return c.onload ~= "OFF" end
+      if key == "role" then
+        if c.onload == "HOST" or c.onload == "JOIN" then return c.onload:lower() end
+        if c.role == "host" or c.role == "join" then return c.role end
+      end
+    end
+    return mod.options:get(key)
+  end
 
   local Net = require("src.link.Net")
   local Handshake = require("src.link.Handshake")
   local GameVersion = require("src.core.GameVersion")
   local GfxIds = require("src.core.game3.scripting.gfx_ids")
 
-  local session, status, game, requests, activity
+  local session, status, requests, activity
   -- when to try connecting again after a dropped link (see RETRY_REASONS)
   local retryAt
   local newRequests
@@ -261,7 +290,7 @@ return function(mod)
   local hud, panelMax = nil, 0
   -- START > CO-OP: picked from the start menu, opened once the field is
   -- free (coopMenu is defined with the menu, below)
-  local menuPending, coopMenu = false, nil
+  local menuPending, coopMenu, openEditor = false, nil, nil
   local slConnected = nil
   -- ROM texts swapped for a refused ball's message (see the bag wrap
   -- below), put back on the next tick
@@ -558,9 +587,9 @@ return function(mod)
       return
     end
     local net = Net.new()
-    role = role or mod.options:get("role")
-    local port = math.floor(tonumber(mod.options:get("port")) or Net.defaultPort())
-    local address = tostring(mod.options:get("address") or ""):match("^%s*(.-)%s*$")
+    role = role or setting("role")
+    local port = math.floor(tonumber(setting("port")) or Net.defaultPort())
+    local address = tostring(setting("address") or ""):match("^%s*(.-)%s*$")
     local ok, sameMachine
     local loopback = address:match("^localhost") ~= nil or address:match("^127%.") ~= nil
     local localPort = tonumber(address:match(":(%d+)$")) or port
@@ -689,10 +718,17 @@ return function(mod)
   -- loaded yet, so the hello would carry no trainer name ("PLAYER")
   local autoPending = false
 
+  local hinted = false
   local function tick(g)
+    -- decided on reaching the field: this player's choice lives in the save
     if autoPending and g.phase == "field" then
       autoPending = false
-      if not session then connect(g) end
+      if setting("autoconnect") and not session and not retryAt then
+        connect(g)
+      elseif not session and not hinted then
+        hinted = true
+        toast("Co-op: START > CO-OP to host or join.", 6)
+      end
     end
     stepActivity()
     pcall(tracker.tick, tracker, g.phase == "field", activity ~= nil,
@@ -721,7 +757,7 @@ return function(mod)
         -- usually an older game process still holding it
         status = ("CO-OP: port %s is held by an old game process - quit the game fully, or change PORT")
           :format(tostring(session.net.target):match(":(%d+)$") or "?")
-      elseif RETRY_REASONS[why] and (session.peer or mod.options:get("autoconnect")) then
+      elseif RETRY_REASONS[why] and (session.peer or setting("autoconnect")) then
         status = "CO-OP: " .. (REASONS[why] or tostring(why)) .. " - reconnecting (F8 stops)"
         retryAt = clock() + RETRY_SECONDS
       else
@@ -882,14 +918,9 @@ return function(mod)
     return next()
   end)
 
-  local hinted = false
   mod.events:on("game.ready", function(ev)
     game = ev and ev.game
-    if game and mod.options:get("autoconnect") and not session then autoPending = true end
-    if game and not session and not autoPending and not hinted then
-      hinted = true
-      toast("Co-op: START > CO-OP to host or join.", 6)
-    end
+    if game and not session then autoPending = true end
   end)
 
   mod.hooks:wrap("input.step", function(next, g, dt)
@@ -918,7 +949,59 @@ return function(mod)
     if hud then hud.scroll = 0 end
   end
 
+  -- CO-OP > ADDRESS (lib/connedit.lua): while it's open it takes every key
+  -- and button, and the field is held still
+  local editor = nil
+  local EDIT_LOCK = "g3coop_edit"
+  local EDIT_KEYS = {
+    left = "left", right = "right", up = "up", down = "down",
+    pageup = "up10", pagedown = "down10", backspace = "back",
+    ["return"] = "confirm", kpenter = "confirm", z = "confirm",
+    escape = "cancel", x = "cancel",
+  }
+  local EDIT_PAD = {
+    dpleft = "left", dpright = "right", dpup = "up", dpdown = "down",
+    rightshoulder = "up10", leftshoulder = "down10", a = "confirm", b = "cancel", back = "cancel",
+  }
+  openEditor = function()
+    local c = connStored() or {}
+    local onload = c.onload
+    if not onload then
+      onload = setting("autoconnect") and (setting("role") == "join" and "JOIN" or "HOST") or "OFF"
+    end
+    editor = ConnEdit.new({ address = setting("address"), port = setting("port"), onload = onload })
+    local Field = engine("field")
+    if Field and Field.lock then Field.lock(EDIT_LOCK) end
+  end
+  local function closeEditor(save)
+    local ed = editor
+    editor = nil
+    local Field = engine("field")
+    if Field and Field.unlock then Field.unlock(EDIT_LOCK) end
+    if not (save and ed) then return end
+    local r = ed:result()
+    local c = connStored() or {}
+    c.address, c.port, c.onload = r.address, r.port, r.onload
+    if r.onload ~= "OFF" then c.role = r.onload:lower() end
+    connWrite(c)
+    toast(("Co-op: saved %s:%d%s."):format(r.address, r.port,
+      r.onload == "OFF" and "" or (", " .. r.onload:lower() .. " on load")), 5)
+  end
+  local function editorKey(key)
+    if not (editor and key) then return end
+    local what = editor:press(key)
+    if what == "save" then closeEditor(true) elseif what == "cancel" then closeEditor(false) end
+  end
+
   mod.hooks:wrap("input.key", function(next, g, ev)
+    if editor and ev then
+      if ev.phase == "pressed" then
+        local k = ev.key
+        local digit = type(k) == "string" and (k:match("^(%d)$") or k:match("^kp(%d)$"))
+        editorKey(digit or EDIT_KEYS[k])
+      end
+      return true
+    end
     if ev and ev.phase == "pressed" and ev.key == "f7" then
       openPanel(not slPanel)
       return true
@@ -948,6 +1031,10 @@ return function(mod)
   end)
 
   mod.hooks:wrap("input.gamepad", function(next, g, ev)
+    if editor and ev then
+      if ev.phase == "pressed" then editorKey(EDIT_PAD[ev.button]) end
+      return true
+    end
     if slPanel and ev and ev.phase == "pressed" then
       if PAD_SCROLL[ev.button] then scrollPanel(PAD_SCROLL[ev.button])
       elseif PAD_CLOSE[ev.button] then openPanel(false) end
@@ -967,8 +1054,8 @@ return function(mod)
   -- ------------------------------------------------------- START > CO-OP
 
   coopMenu = function(g)
-    local addr = tostring(mod.options:get("address") or ""):match("^%s*(.-)%s*$")
-    local port = math.floor(tonumber(mod.options:get("port")) or Net.defaultPort())
+    local addr = tostring(setting("address") or ""):match("^%s*(.-)%s*$")
+    local port = math.floor(tonumber(setting("port")) or Net.defaultPort())
     if not addr:match(":%d+$") then addr = addr .. ":" .. port end
     local s = session
     if s and s.state == "connected" then
@@ -999,12 +1086,19 @@ return function(mod)
         end
       end)
     else
-      ui.menu("HOST a game here, or JOIN\n" .. addr .. "?", { "HOST", "JOIN", "SOUL LINK", "CANCEL" },
+      ui.menu("HOST a game here, or JOIN\n" .. addr .. "?", { "HOST", "JOIN", "ADDRESS", "SOUL LINK", "CANCEL" },
         function(i)
           if i == 0 or i == 1 then
             retryAt = nil
-            connect(g or game, i == 0 and "host" or "join")
+            local role = i == 0 and "host" or "join"
+            -- remembered, so CONNECT ON LOAD and reconnects know which
+            local c = connStored() or {}
+            c.role = role
+            connWrite(c)
+            connect(g or game, role)
           elseif i == 2 then
+            openEditor()
+          elseif i == 3 then
             openPanel(true)
           end
         end)
@@ -1310,6 +1404,11 @@ return function(mod)
     for i = #toasts, 1, -1 do
       if toasts[i].untilT < now then table.remove(toasts, i) end
     end
+    if editor then
+      local ok, err = pcall(hud.drawEditor, hud, viewport, editor, #ConnEdit.FIELDS)
+      if not ok then mod.log:warn("co-op address screen: %s", tostring(err)) end
+      return
+    end
     if slPanel then
       local data = tracker.run and tracker:panel() or nil
       if data and capNow() then data.cap = { level = capState.cap, label = capState.label } end
@@ -1357,6 +1456,9 @@ return function(mod)
     return ok
   end
   mod.exports.teamState = function() return teamState end
+  mod.exports.editor = function() return editor end
+  mod.exports.openEditor = function() openEditor() end
+  mod.exports.setting = setting
   mod.exports.levelCap = function() stepCaps() return capNow(), capState end
   mod.exports.menu = function(g) coopMenu(g) end
 end

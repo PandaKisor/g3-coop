@@ -146,16 +146,19 @@ different engine major version is refused with a reason.
 
 ## Play
 
-1. In the **launcher**, open **Settings** and scroll to the **Gen 3 Co-op**
-   section. (Gen 3 games have no in-game mod menu; F10 only exists in Red,
-   Blue and Yellow.)
-2. Both: pick a **PORT** (default 7777). The partner enters the host's
-   **HOST ADDRESS**.
-3. Both start the game and load a save. The host picks **START > CO-OP >
-   HOST**; the card shows the address to give the partner. The partner
-   picks **START > CO-OP > JOIN**.
-4. Or set **CO-OP ROLE** (HOST / JOIN) and use **F8** to connect and
-   disconnect, or turn on **CONNECT ON LOAD** to skip it.
+1. Both start the game and load a save. The host picks **START > CO-OP >
+   HOST**; the card shows the address to give the partner.
+2. The partner picks **START > CO-OP > ADDRESS**, enters the host's address
+   and port (d-pad: LEFT/RIGHT picks a number, UP/DOWN changes it, L/R by
+   10; or type digits), and saves with A. Then **START > CO-OP > JOIN**.
+3. **On load** on the same screen (OFF / HOST / JOIN) connects by itself
+   whenever this save is loaded. **F8** connects or disconnects in one key.
+
+These choices are kept in each player's own save. The launcher's
+**Settings > Gen 3 Co-op** (ROLE, HOST ADDRESS, PORT, CONNECT ON LOAD) are
+used until a player sets them in the game. A sealed cart (the Inclement
+port) hands its mods only the cart's options, so on a cart the in-game
+screen is the only way to set them per player.
 
 ### Connecting over the internet
 

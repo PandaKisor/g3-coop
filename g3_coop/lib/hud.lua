@@ -347,4 +347,60 @@ function Hud:drawPanel(vp, data, iconFor)
   return maxScroll
 end
 
+-- ------------------------------------------------------- CO-OP > ADDRESS
+
+-- ed: a lib/connedit.lua editor.  One box in the middle of the window: the
+-- host's address and port as fields, the selected one highlighted, then
+-- what happens on load and the controls.
+function Hud:drawEditor(vp, ed, fieldCount)
+  self:_setup(vp, true)
+  local g = self.gfx
+  local pad = math.max(4, self.u * 3)
+  local cp = math.max(2, self.u)
+  local width = math.min(self.gw - pad * 2, math.max(self.lh * 26, math.floor(self.gw * 0.55)))
+  local height = self.lh * 9 + pad * 2
+  local x = self.gx + math.floor((self.gw - width) / 2)
+  local y = self.gy + math.floor((self.gh - height) / 2)
+  self:_box(x, y, width, height, 1, C.coop)
+  local cx, cy = x + pad * 1.5, y + pad
+  self:_print("CO-OP CONNECTION", cx, cy, C.coop)
+  cy = cy + self.lh * 1.6
+  self:_print("Host's address (joining) and port", cx, cy, C.dim)
+  cy = cy + self.lh * 1.3
+
+  local function field(i, text, fx)
+    local w = self:w(text) + cp * 2
+    if ed.cursor == i then
+      g.setColor(C.coop[1], C.coop[2], C.coop[3], 0.3)
+      g.rectangle("fill", fx, cy, w, self.lh, cp, cp)
+    end
+    self:_print(text, fx + cp, cy, ed.cursor == i and C.text or C.dim)
+    return fx + w
+  end
+  local fx = cx
+  for i = 1, 4 do
+    fx = field(i, tostring(ed:value(i)), fx)
+    self:_print(i < 4 and "." or ":", fx, cy, C.dim)
+    fx = fx + self:w(i < 4 and "." or ":")
+  end
+  field(5, tostring(ed:value(5)), fx)
+  cy = cy + self.lh * 1.8
+
+  self:_print("On load:", cx, cy, C.dim)
+  local ox = cx + self:w("On load: ")
+  local onload = ed:value(fieldCount)
+  ox = field(fieldCount, onload, ox)
+  local note = onload == "HOST" and "  host when the game loads"
+    or onload == "JOIN" and "  join this address when the game loads"
+    or "  connect from START > CO-OP"
+  self:_print(note, ox, cy, C.dim)
+  cy = cy + self.lh * 1.8
+
+  for _, l in ipairs({ "LEFT/RIGHT field, UP/DOWN change (L/R by 10), or type digits",
+                       "A / Enter: save     B / Esc: cancel" }) do
+    self:_print(l, cx, cy, C.dim)
+    cy = cy + self.lh * 1.1
+  end
+end
+
 return Hud
