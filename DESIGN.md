@@ -499,6 +499,50 @@ Not done, and why: EXP (engine, CODEX-REQUESTS.md 3), three-faint limit
 split decision), a menu entry and trainer sight start (co-op side, next),
 disconnect pause/fallback (D4), mid-battle join (D5).
 
+### Shared story progression (0.8.0-dev.7, port dev.23)
+
+Codex's design (a): each game runs the fight's own post-battle script
+against its own save. See `porting/full_port/COOP-PROGRESSION.md` for the
+contract. `lib/progress.lua` does the co-op half (protocol 10,
+`coop_prog`):
+
+1. The initiator's script stops at the story trainer's battle with
+   `opts.coopContinuation`. Co-op calls `prepare(id, d, true)` and sends
+   `prep`; the partner calls `prepare(id, d, false)` and answers
+   `prepped`. Only then is the joint request sent. A refusal or no answer
+   within 8 s calls the fight off with `cancel`.
+2. At `battle.ended` each game resolves its own result (win / lose; any
+   other ending is `cancel`), before whiteout and before the script
+   resumes. It then sends `event` (id, descriptor, result).
+3. The initiator's script runs its own continuation. The partner calls
+   `replay(id)` when the field is idle and on the event's map, retrying
+   while the field is busy and saying where to go if they're elsewhere.
+4. `coop.progress` `done` sends `done`; the other game calls `ack` once it
+   is done too.
+5. On every connect both games send `have` (every receipt and its
+   status). A result the other side lacks is resent. A receipt nobody
+   finished is cancelled. A finished one whose partner lost or called it
+   off is acknowledged, and each keeps its own result.
+
+Ids are `g3c:<OT>.<SID>:<counter>:<time>`, with the counter in
+`mod.storage`. Descriptors travel unchanged: `Protocol.copyData` bounds
+depth, nodes and string length, and refuses data that is too big rather
+than shortening it. Joint credit no longer sets a story trainer's flag
+(the event does), but it still pays the prize.
+
+A story fight the port can't share (`coopContinuationError`, or no
+descriptor, as for Norman, Wallace, Archie, the Museum and Space Center
+fights) is fought alone by the initiator, with a toast. It isn't credited
+to the partner.
+
+Verified with two real games on dev.23 against the real Roxanne script:
+- a joint win gives each player a badge and a TM, with done and ack on
+  both sides;
+- with the partner dropped, the initiator wins alone; the partner restarts
+  from an older save and gets the ending on reconnect;
+- with the partner gone during the handshake, the fight is called off
+  (cancelled, Roxanne still unbeaten), and the retry wins.
+
 ### Decisions (user, 2026-10-21)
 
 - Prize money in a team battle: each player receives the full prize for

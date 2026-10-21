@@ -36,7 +36,7 @@ function Session.new(net, role, localHello, deps)
     net = net, role = role, localHello = localHello,
     P = deps.Protocol, compat = deps.compat, now = now, offsetOf = deps.offsetOf,
     Channel = deps.Channel, channels = {}, requests = {}, early = {}, earlyCount = 0,
-    emotes = 0, lastEmote = nil, npcs = {}, sl = {}, teams = {}, credits = {},
+    emotes = 0, lastEmote = nil, npcs = {}, sl = {}, teams = {}, credits = {}, progs = {},
     presence = deps.Presence.new(), ghost = deps.Ghost.new(),
     state = "waiting", reason = nil, peer = nil, peerBusy = "none", busy = "none",
     helloSent = false, lastHeard = t, lastSent = t, pairedAt = nil,
@@ -109,6 +109,8 @@ function Session:_receive(raw)
         self.early[msg.c] = q
         self.earlyCount = self.earlyCount + 1
       end
+    elseif msg.type == P.PROG then
+      if #self.progs < 256 then self.progs[#self.progs + 1] = msg end
     elseif msg.type == P.CREDIT then
       if #self.credits < 64 then self.credits[#self.credits + 1] = msg end
     elseif msg.type == P.TEAM then
@@ -228,6 +230,17 @@ end
 function Session:takeCredits()
   local list = self.credits
   self.credits = {}
+  return list
+end
+
+-- shared story progression (lib/progress.lua)
+function Session:sendProg(fields)
+  if self.state == "connected" then self:_send(self.P.prog(fields)) end
+end
+
+function Session:takeProgs()
+  local list = self.progs
+  self.progs = {}
   return list
 end
 

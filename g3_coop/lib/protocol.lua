@@ -14,7 +14,8 @@ local Protocol = {}
 -- 7: team battles against the game's trainers (coop_team, act "team")
 -- 8: shared wild encounters (act "wild"), shared trainer credit (coop_credit)
 -- 9: trainer fights together (acts "trainer" and "joint", ask carries t)
-Protocol.VERSION = 9
+-- 10: shared story progression (coop_prog, lib/progress.lua)
+Protocol.VERSION = 10
 
 Protocol.HELLO = "coop_hello"
 Protocol.POS = "coop_pos"
@@ -30,6 +31,7 @@ Protocol.SL = "coop_sl"
 Protocol.TEAM = "coop_team"
 Protocol.CREDIT = "coop_credit"
 Protocol.MAX_CREDIT_IDS = 512
+Protocol.PROG = "coop_prog"
 
 Protocol.MAX_NAME = 16
 Protocol.MAX_MAP = 64
@@ -210,6 +212,58 @@ end
 -- dropped counts for both; never filtered as a story trainer)
 function Protocol.credit(ids, fresh, joint)
   return { type = Protocol.CREDIT, ids = ids, fresh = fresh == true or nil, joint = joint == true or nil }
+end
+
+-- Shared story progression (lib/progress.lua).  The descriptor is the
+-- port's own data (COOP-PROGRESSION.md): it travels exactly as given, never
+-- through packTree (which shortens strings); the port validates it before
+-- using it.  fields: { op, id, d, r, ok, why, list }
+Protocol.MAX_PROG_DEPTH = 16
+Protocol.MAX_PROG_NODES = 60000
+Protocol.MAX_PROG_STRING = 8192
+Protocol.MAX_PROG_LIST = 2048
+local PROG_OPS = { prep = true, prepped = true, event = true, done = true, have = true }
+local PROG_RESULTS = { win = true, lose = true, cancel = true }
+local PROG_STATUS = { battle = true, queued = true, running = true, done = true, failed = true,
+                      cancelled = true, unknown = true }
+local PROG_ID = "^[%w%.:_%-]+$"
+
+function Protocol.prog(f)
+  return { type = Protocol.PROG, op = f.op, id = f.id, d = f.d, r = f.r, ok = f.ok, why = f.why,
+           list = f.list }
+end
+
+-- a copy of plain JSON data, or nil plus why if it's too big or not data;
+-- nothing is shortened or dropped
+function Protocol.copyData(v)
+  local nodes = 0
+  local function walk(x, depth)
+    nodes = nodes + 1
+    if nodes > Protocol.MAX_PROG_NODES then return nil, "too_big" end
+    local t = type(x)
+    if t == "number" then
+      if x ~= x or x == math.huge or x == -math.huge then return nil, "bad_number" end
+      return x
+    end
+    if t == "string" then
+      if #x > Protocol.MAX_PROG_STRING then return nil, "long_string" end
+      return x
+    end
+    if t == "boolean" then return x end
+    if t ~= "table" or depth >= Protocol.MAX_PROG_DEPTH then return nil, "bad_data" end
+    local out = {}
+    for k, val in pairs(x) do
+      local kt = type(k)
+      if not ((kt == "string" and #k <= 128) or (kt == "number" and k == math.floor(k) and math.abs(k) <= 1e6)) then
+        return nil, "bad_key"
+      end
+      local c, why = walk(val, depth + 1)
+      if c == nil then return nil, why end
+      out[k] = c
+    end
+    return out
+  end
+  return walk(v, 0)
 end
 
 function Protocol.bye(reason)
@@ -425,6 +479,41 @@ validators[Protocol.CREDIT] = function(m)
     out[i] = id
   end
   return { type = m.type, ids = out, fresh = m.fresh == true, joint = m.joint == true }
+end
+
+validators[Protocol.PROG] = function(m)
+  local op = PROG_OPS[m.op] and m.op
+  if not op then return nil, "bad_prog" end
+  local out = { type = m.type, op = op }
+  if op == "have" then
+    if type(m.list) ~= "table" or #m.list > Protocol.MAX_PROG_LIST then return nil, "bad_prog" end
+    out.list = {}
+    for i = 1, #m.list do
+      local e = m.list[i]
+      if type(e) ~= "table" then return nil, "bad_prog" end
+      local id = str(e.id, 128, PROG_ID)
+      if not (id and PROG_STATUS[e.s]) then return nil, "bad_prog" end
+      out.list[i] = { id = id, s = e.s, live = e.live == true or nil }
+    end
+    return out
+  end
+  out.id = str(m.id, 128, PROG_ID)
+  if not out.id then return nil, "bad_prog" end
+  if m.r ~= nil then
+    if not PROG_RESULTS[m.r] then return nil, "bad_prog" end
+    out.r = m.r
+  end
+  if m.d ~= nil then
+    local d, why = Protocol.copyData(m.d)
+    if type(d) ~= "table" then return nil, why or "bad_prog" end
+    out.d = d
+  end
+  if (op == "prep" or op == "event") and not out.d then return nil, "bad_prog" end
+  if op == "prepped" then
+    out.ok = m.ok == true
+    out.why = str(m.why, 32, "^[%w_]+$")
+  end
+  return out
 end
 
 validators[Protocol.BYE] = function(m)

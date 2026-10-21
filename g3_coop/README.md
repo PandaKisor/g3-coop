@@ -36,6 +36,26 @@ engine release and the same mods.
     is turned down as busy.
   - If either player disconnects mid-battle, the battle ends as a draw on
     both sides. Mid-trade, an unfinished trade is called off.
+- **Fighting together** (the Inclement cart, port 0.6.0-dev.23 or later):
+  - A wild POKeMON found in the grass with your partner on the same map
+    asks them to join. On YES you both face two wild POKeMON together;
+    otherwise you fight it alone.
+  - An ordinary TRAINER asks your partner the same way. You fight them
+    together, and each of you gets the full prize. A TRAINER you beat
+    alone counts as beaten in your partner's game too.
+  - Rival, gym and story fights need you both. If your partner isn't
+    there, a box tells you to wait, and you can walk away. When they are
+    there, they're pulled in. Afterwards **both games play the fight's
+    ending**: each of you gets your own badge, TM, gift and story changes.
+    A partner who dropped out (or loaded an older save) gets that ending
+    when you reconnect. If they're somewhere else, they're told where to
+    go back to.
+  - A few story scenes can't be shared yet (Norman, Wallace, Archie, the
+    Museum and Space Center fights). Each of you fights those alone, in
+    your own game.
+  - If your partner drops mid-battle, you choose **CONTINUE ALONE** or
+    **END THE BATTLE** (a draw). Ending a story fight calls it off in your
+    game, and you can fight it again.
 - They never block you. You walk through them, so they can't jam a
   doorway or a puzzle. NPCs walk around them, as they walk around you.
 - **Shared NPCs:** while you're both on the same map, the wandering
@@ -132,7 +152,7 @@ can't start, the toast says why (for example "different engine release").
 
 ## Install
 
-Import **`g3-coop-0.8.0-dev.1.zip`** from the launcher's **MODS** import screen
+Import **`g3-coop-0.8.0-dev.7.zip`** from the launcher's **MODS** import screen
 (the same way as the Inclement package), then enable it. Both players need
 the mod, and the same version of it: 0.7.x refuses to connect to 0.6.x
 or older and says "different co-op version". AUTOCONNECT now waits until
@@ -199,8 +219,12 @@ POKEPORT_IDENTITY=coop-b love .   # ROLE = JOIN, address 127.0.0.1, F8
 ## Headless tests (development only; not in the zip)
 
 ```sh
-cd Gen3Mod/gen1recomp-0.3.73 && luajit ../coop/tests/run.lua && luajit ../coop/tests/run_link.lua && luajit ../coop/tests/run_soullink.lua
+cd Gen3Mod/gen1recomp-0.3.73 && luajit ../coop/tests/run.lua && luajit ../coop/tests/run_link.lua && luajit ../coop/tests/run_soullink.lua && luajit ../coop/tests/run_progress.lua
 ```
+
+`run_progress.lua` covers shared story progression (`lib/progress.lua`):
+the prepare/result/replay/completion exchange, duplicates, a called-off
+fight, a dropped partner, an older save, and reconnecting.
 
 `run_link.lua` covers the battle/trade layer: request validation, the link
 channel inside the co-op connection (including the engine's real

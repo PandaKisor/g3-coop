@@ -33,6 +33,7 @@ return function(mod)
   local ConnEdit = import("lib/connedit.lua")
   local TradeFull = import("lib/tradefull.lua")
   local Credit = import("lib/credit.lua")
+  local Progress = import("lib/progress.lua")
 
   mod.options:define(import("options.lua"))
 
@@ -563,15 +564,68 @@ return function(mod)
   -- event gate").
   local heldTrainer = nil
 
-  -- the trainer script's result: a win, or anything else as a loss (a
-  -- "draw" would count as beaten); called once
+  -- Shared story progression (lib/progress.lua): the port's receipts for
+  -- a rival, gym or story fight, so the partner's game plays the same
+  -- post-battle script (badge, TM, story) as the initiator's.
+  local function progressApi()
+    if not gameSession() then return nil end
+    for mid, ex in pairs(game and game.mods and game.mods.exports or {}) do
+      if mid ~= "g3_coop" and type(ex) == "table" and type(ex.coopProgress) == "table"
+          and ex.coopProgress.API == 1 then
+        return ex.coopProgress
+      end
+    end
+    return nil
+  end
+  local progress = Progress.new({
+    api = progressApi,
+    send = function(fields) if session then session:sendProg(fields) end end,
+    connected = function() return session ~= nil and session.state == "connected" end,
+    now = clock, toast = function(text, secs) toast(text, secs) end,
+    -- saved at once (mod.storage), with the time in case an older save
+    -- comes back: never the same id for two events
+    newId = function()
+      local okR, n = pcall(mod.storage.read, mod.storage, game, "event_seq")
+      n = (okR and tonumber(n) or 0) + 1
+      pcall(mod.storage.write, mod.storage, game, "event_seq", n)
+      local gs = gameSession() or {}
+      return ("g3c:%d.%d:%d:%d"):format(tonumber(gs.trainerId) or 0, tonumber(gs.secretId) or 0,
+        n, os.time())
+    end,
+    canJoin = function()
+      return game ~= nil and game.phase == "field" and not activity and not heldTrainer
+        and not (requests and (requests.outgoing or requests.busy))
+    end,
+    idle = function()
+      if not fieldFree() then return false end
+      local Space = engine("scripting.space")
+      return not (Space and Space.vm and Space.vm.isRunning and Space.vm:isRunning())
+    end,
+    held = function() return heldTrainer and heldTrainer.event end,
+    mapName = function(map)
+      local words = tostring(map or ""):gsub("^EM_", ""):gsub("_", " ")
+      return words ~= "" and words or nil
+    end,
+    log = function(fmt, ...) mod.log:warn(fmt, ...) end,
+  })
+
+  -- the trainer script's result: a win, a loss, or (a fight that never
+  -- finished) "cancel", which halts the script without its post-battle
+  -- part; an engine without "cancel" gets "lose" (a "draw" would count as
+  -- beaten).  A shared story event takes the same result first.  Once.
   local function releaseHeld(word)
     local h = heldTrainer
     heldTrainer = nil
     if not (h and h.done) then return end
     local Field = engine("field")
     if Field and Field.unlock then Field.unlock(WILD_LOCK) end
-    pcall(h.done, word == "win" and "win" or "lose")
+    local r = word == "win" and "win" or (word == "lose" or word == "whiteout") and "lose"
+      or (h.cancel and "cancel" or "lose")
+    if h.event then
+      pcall(progress.finish, progress, h.event, r)
+      if r == "win" then progress:started(h.event) end
+    end
+    pcall(h.done, r)
   end
 
   local function startActivity(act, id, t)
@@ -587,6 +641,7 @@ return function(mod)
     -- a wild POKeMON one of us found: a team battle against two wild foes
     -- the host rolls on the shared map
     local wildPick = nil
+    local jointFight = act == "joint"
     if act == "wild" then
       wildPick = { wild = true }
       act = "team"
@@ -632,6 +687,11 @@ return function(mod)
       end,
     })
     activity = mine
+    -- a story fight's shared event: ours if we started it, else the one
+    -- the partner just had us prepare
+    if teamState and jointFight then
+      teamState.event = heldTrainer and heldTrainer.event or progress:expected()
+    end
     mine:start()
   end
 
@@ -768,6 +828,7 @@ return function(mod)
   end
 
   local function npcsCanMove()
+    if progress:busy() then return false end
     local Space, Field, Hud = engine("scripting.space"), engine("field"), uiModule("hud")
     if Space and Space.vm and Space.vm.isRunning and Space.vm:isRunning() then return false end
     if Field and Field.isLocked and Field.isLocked() then return false end
@@ -839,6 +900,7 @@ return function(mod)
   local applyCredits, settlePrize
 
   local hinted = false
+  local progConnected, sceneBusy = nil, false
   local function tick(g)
     -- decided on reaching the field: this player's choice lives in the save
     if autoPending and g.phase == "field" then
@@ -855,6 +917,10 @@ return function(mod)
       g.phase == "field" and not activity and npcsCanMove())
     stepCaps()
     restoreText()
+    if g.phase == "field" then
+      local okP, errP = pcall(progress.tick, progress)
+      if not okP then mod.log:warn("story events: %s", tostring(errP)) end
+    end
     if menuPending and fieldFree() then
       menuPending = false
       coopMenu(g)
@@ -898,6 +964,19 @@ return function(mod)
     end
     local okC, errC = pcall(applyCredits)
     if not okC then mod.log:warn("trainer credit: %s", tostring(errC)) end
+    if progConnected ~= session then
+      progConnected = session
+      local okP, errP = pcall(progress.connected, progress)
+      if not okP then mod.log:warn("story events: %s", tostring(errP)) end
+    end
+    for _, msg in ipairs(session:takeProgs()) do
+      local okP, errP = pcall(progress.onMessage, progress, msg)
+      if not okP then mod.log:warn("story event: %s", tostring(errP)) end
+    end
+    -- the partner sees us busy while a story scene plays here
+    local scene = progress:busy()
+    if not activity and scene ~= sceneBusy then session:setBusy(scene and "script" or "none") end
+    sceneBusy = scene
     if waitCancel and g.input and g.input.wasPressed and g.input:wasPressed("b") then
       local cancel = waitCancel
       waitCancel = nil
@@ -1492,7 +1571,10 @@ return function(mod)
       for _, id in ipairs(msg.ids) do
         if msg.joint or not storyTrainer(id) then
           local had = trainerBeaten(id)
-          if had == false then
+          -- a story fight's win arrives as its shared event (lib/progress.lua),
+          -- which sets the flag along with the badge and the rest
+          local viaEvent = msg.joint and progress:api() ~= nil and storyTrainer(id)
+          if had == false and not viaEvent then
             trainerBeaten(id, true)
             if msg.joint then
               local info = trainerInfo(id)
@@ -1548,7 +1630,7 @@ return function(mod)
   end
 
   local function partnerCanJoin()
-    return partnerHere() and not activity and not heldTrainer
+    return partnerHere() and not activity and not heldTrainer and not progress:busy()
       and not (requests and (requests.outgoing or requests.busy))
   end
 
@@ -1578,6 +1660,12 @@ return function(mod)
   -- when the partner is here: a story fight pulls them in (they were
   -- checked at the gate), an ordinary one asks them first and runs solo on
   -- a no.  The script waits (heldTrainer) and gets the team battle's result.
+  -- A story fight first has both games prepare its shared event (the
+  -- port's continuation), so the partner's game plays the same post-battle
+  -- script; one the port can't share yet is fought alone.
+  local CALLED_OFF = {
+    no_reply = "no answer", busy = "partner busy", no_api = "partner's game can't share it",
+  }
   if Bridge then
     Bridge._g3coopTrainer = function(m, g, foe, opts)
       local tid = tonumber(opts.trainerId)
@@ -1585,37 +1673,72 @@ return function(mod)
       if not (game and game.phase == "field") then return false end
       local plan = trainerPlan(tid, tonumber(opts.trainerIdB))
       local story = plan.story == true
+      local shared = story and progress:api() ~= nil
+      local cancel = progress:api() and "cancel" or "lose"
       if not partnerCanJoin() then
         if not story then return false end
         -- the gate let it through, but the partner is gone since
         toast("Your partner isn't here any more: this fight waits for both of you.", 6)
-        pcall(opts.done, "lose")
+        pcall(opts.done, cancel)
         return true
+      end
+      if shared and type(opts.coopContinuation) ~= "table" then
+        local info = trainerInfo(tid)
+        toast(("%s %s's scene can't be shared yet (%s): fight it alone; %s plays it in their own game."):format(
+          tostring(info.className or "TRAINER"), tostring(info.name or ""),
+          tostring(opts.coopContinuationError or "not supported"),
+          tostring(session.peer and session.peer.name or "your partner")), 8)
+        mod.log:warn("story trainer %d not shared: %s", tid, tostring(opts.coopContinuationError or "no continuation"))
+        return false
       end
       local Field = engine("field")
       if Field and Field.lock then Field.lock(WILD_LOCK) end
-      heldTrainer = { done = opts.done, noWhiteout = opts.noWhiteout }
+      heldTrainer = { done = opts.done, noWhiteout = opts.noWhiteout, cancel = cancel == "cancel" }
       local alone = function()
         if story then
           toast("The fight is called off: it needs both of you.", 6)
-          releaseHeld("lose")
+          releaseHeld("cancel")
         else
           heldTrainer = nil
           if Field and Field.unlock then Field.unlock(WILD_LOCK) end
           Bridge._g3coopStart(m, g, foe, opts)
         end
       end
-      if not requests:request(story and "joint" or "trainer", alone, plan.trainerIds) then
+      local name = tostring(session.peer and session.peer.name or "your partner")
+      local function ask()
+        if requests:request(story and "joint" or "trainer", alone, plan.trainerIds) then return true end
+        if story then releaseHeld("cancel") return true end
         heldTrainer = nil
         if Field and Field.unlock then Field.unlock(WILD_LOCK) end
-        if story then pcall(opts.done, "lose") return true end
         return false
       end
-      local name = tostring(session.peer and session.peer.name or "your partner")
+      if shared then
+        local id, why = progress:begin(opts.coopContinuation, function()
+          if heldTrainer and heldTrainer.event then ask() end
+        end, function(why)
+          toast("The fight is called off (" .. tostring(CALLED_OFF[why] or why) .. ").", 6)
+          releaseHeld("cancel")
+        end)
+        if not id then
+          mod.log:warn("story event for trainer %d: %s", tid, tostring(why))
+          toast("The fight can't be shared (" .. tostring(CALLED_OFF[why] or why) .. ").", 6)
+          releaseHeld("cancel")
+          return true
+        end
+        heldTrainer.event = id
+        toast("Starting the fight with " .. name .. "...", 4)
+        return true
+      end
+      if not ask() then return false end
       toast(story and ("Starting the fight with " .. name .. "...") or ("Asking " .. name .. " to join the fight..."), 4)
       return true
     end
   end
+
+  mod.events:on("coop.progress", function(ev)
+    local ok, err = pcall(progress.onStatus, progress, ev)
+    if not ok then mod.log:warn("story event: %s", tostring(err)) end
+  end)
 
   mod.events:on("battle.ended", function(ev)
     if not activity and ev and ev.result == "win" then
@@ -1629,6 +1752,15 @@ return function(mod)
       local ok, n = pcall(TeamBattle.writeback, E, gs, ev and ev.battle, teamState.slots)
       teamState.written = ok and n or 0
       if not ok then mod.log:warn("team battle writeback: %s", tostring(n)) end
+      -- the story event takes the shared result before any script carries
+      -- on or a whiteout moves anyone (a fight ended without one, after a
+      -- dropped partner, is called off in this game)
+      if teamState.event then
+        local r = ev and ev.result
+        r = r == "win" and "win" or (r == "lose" or r == "whiteout") and "lose" or "cancel"
+        local okF, errF = pcall(progress.finish, progress, teamState.event, r)
+        if not okF then mod.log:warn("story event: %s", tostring(errF)) end
+      end
       if ev and ev.result == "win" and not teamState.wild then
         pcall(TeamBattle.markBeaten, E, teamState.foes)
         local fresh = {}
@@ -1953,6 +2085,7 @@ return function(mod)
     return ok
   end
   mod.exports.teamState = function() return teamState end
+  mod.exports.progress = function() return progress end
   -- prototype entry for a wild double on the host's map (mapId: another
   -- map's table, for testing)
   mod.exports.teamWild = function(mapId)
