@@ -463,4 +463,64 @@ local capsMsg = Protocol.validate(Protocol.sl({ run = "r", tid = "1-A", nm = "A"
   rules = SL.copyRules({ caps = true }), ev = {} }))
 T.check(capsMsg and capsMsg.rules.caps == true, "level caps travel with the host's rules")
 
+-- ------- shared wild doubles and team battles (co-op 0.8)
+do
+  local gW = newGame(500, "MAY")
+  gW.sec = 40
+  local W, ioW = newTracker(gW)
+  W:ensure()
+  local function coopWild(a, b)
+    W:onBattleStarted({ kind = "coopwild", battle = { foeParty = { { species = a }, { species = b } } } })
+  end
+  local function events(kind)
+    local n = 0
+    for _, e in ipairs(SL.log(W.run, W.tid)) do if e.k == kind then n = n + 1 end end
+    return n
+  end
+  coopWild(60, 61)
+  T.eq(events("enc"), 1, "a shared wild double is this player's encounter")
+  T.check(lastToast(ioW):find("Catch either one", 1, true), "and says either foe will do")
+  gW.party[1] = mon(501, 500, 61)
+  W:onCaught({ mon = gW.party[1] })
+  local log = SL.log(W.run, W.tid)
+  T.eq(log[#log].k, "catch", "catching the second foe is the encounter's catch")
+  T.eq(log[#log].s, 61, "recorded as the species actually caught")
+  T.eq(log[#log].x, nil, "and allowed")
+  gW.party[2] = mon(502, 500, 60)
+  W:onCaught({ mon = gW.party[2] })
+  log = SL.log(W.run, W.tid)
+  T.eq(log[#log].x, "over", "catching both foes: the second is not allowed")
+  W:onBattleEnded({})
+  T.eq(events("miss"), 0, "a caught encounter is no miss")
+
+  coopWild(70, 71)
+  T.check(lastToast(ioW):find("already had", 1, true), "a used area stays used in a shared battle")
+  W:onBattleEnded({})
+
+  gW.sec = 41
+  coopWild(61, 72)          -- 61's line is caught: 72 is the only one that counts
+  T.eq(events("enc"), 2, "one foe a dupe, the other still counts")
+  gW.party[3] = mon(503, 500, 61)
+  W:onCaught({ mon = gW.party[3] })
+  log = SL.log(W.run, W.tid)
+  T.eq(log[#log].x, "over", "catching the dupe of the two is against the rules")
+  W:onBattleEnded({})
+
+  gW.sec = 42
+  coopWild(80, 81)
+  W:onBattleEnded({})
+  T.eq(events("miss"), 1, "an eligible shared encounter that escapes is a miss")
+
+  W:onBattleStarted({ kind = "coopteam" })
+  local before = #SL.log(W.run, W.tid)
+  W:onFainted({ sideName = "player", battlerId = 2, battle = { linkOwn = 0 },
+                battler = { side = "player", mon = gW.party[1] } })
+  T.eq(#SL.log(W.run, W.tid), before, "a team battle's partner-side faint is the partner's to record")
+  W:onFainted({ sideName = "player", battlerId = 0, battle = { linkOwn = 0 },
+                battler = { side = "player", mon = gW.party[1] } })
+  log = SL.log(W.run, W.tid)
+  T.eq(log[#log].k, "faint", "our own faint in a team battle is real")
+  W:onBattleEnded({})
+end
+
 T.finish("g3_coop soul link")

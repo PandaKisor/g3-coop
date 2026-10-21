@@ -1214,8 +1214,13 @@ return function(mod)
     if session then session:setBusy("battle") end
     local how = Bridge and Bridge._g3coopHow or "wild"
     if Bridge then Bridge._g3coopHow = nil end
-    -- a co-op link battle is never an encounter
-    if activity then ev = { kind = "link" } end
+    -- a co-op link battle is never an encounter; a team battle's faints
+    -- are real, and a shared wild double is each player's own encounter
+    if activity and activity.kind == "team" then
+      ev = { kind = (teamState and teamState.wild) and "coopwild" or "coopteam", battle = ev and ev.battle }
+    elseif activity then
+      ev = { kind = "link" }
+    end
     local ok, err = pcall(tracker.onBattleStarted, tracker, ev, how)
     if not ok then mod.log:warn("soul link: %s", tostring(err)) end
   end)

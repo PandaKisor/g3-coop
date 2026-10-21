@@ -198,6 +198,12 @@ end
 -- how: "wild" or "static" (main.lua knows which)
 function Tracker:onBattleStarted(ev, how)
   if not self:ensure() then return end
+  if ev and ev.kind == "coopwild" then return self:_coopWildStarted(ev) end
+  if ev and ev.kind == "coopteam" then
+    -- a team battle against trainers: real faints, our own mons only
+    self.battle = { other = true, team = true }
+    return
+  end
   if not ev or ev.kind ~= "wild" then
     -- a co-op link battle is played with copies: its faints aren't real
     self.battle = { other = true, link = ev and ev.kind == "link" }
@@ -230,16 +236,72 @@ function Tracker:onBattleStarted(ev, how)
   end
 end
 
+-- A wild double shared with the partner (lib/teambattle.lua).  Each player
+-- has their own first encounter per area (the addendum): this game judges
+-- only its own.  Either foe may be the one this player catches, so the
+-- encounter counts if either foe would; the catch itself is judged again by
+-- the species actually caught (onCaught).
+function Tracker:_coopWildStarted(ev)
+  local d = self.d
+  local st = ev.battle
+  local a = d.areaOf()
+  local best, foes = nil, {}
+  for _, mon in ipairs(st and st.foeParty or {}) do
+    local enc = { a = a, s = tonumber(mon.species or mon.speciesId), h = "wild",
+                  sh = d.isShiny(mon) or nil }
+    if enc.a and enc.s then
+      local verdict, why = self.SL.judge(self.run, self:rules(), self:view(), enc)
+      foes[#foes + 1] = { enc = enc, verdict = verdict, why = why }
+      local rank = verdict == "counts" and 3 or verdict == "free" and 2 or 1
+      if not best or rank > best.rank then best = { enc = enc, verdict = verdict, why = why, rank = rank } end
+    end
+  end
+  if not best then
+    self.battle = { other = true, team = true }
+    return
+  end
+  self.battle = { enc = best.enc, verdict = best.verdict, why = best.why, caught = false,
+                  team = true, coopWild = true, foes = foes }
+  local area = d.areaName(a)
+  if best.verdict == "counts" then
+    self:_append({ k = "enc", a = a, s = best.enc.s, h = "wild", sh = best.enc.sh })
+    d.toast(("Soul Link: this is your %s encounter. Catch either one."):format(area), 5)
+  elseif best.verdict == "free" then
+    d.toast("Soul Link: a shiny! Free to catch.", 5)
+  elseif best.why == "dupe" then
+    d.toast("Soul Link: dupes clause, both lines are caught.", 5)
+  else
+    d.toast(("Soul Link: you already had your %s encounter."):format(area), 5)
+  end
+end
+
 function Tracker:onCaught(ev)
   if not self:ensure() then return end
   local b = self.battle
   local mon = ev and ev.mon
   local u = self.SL.uid(mon)
   if not (b and b.enc and u) then return end
+  if b.coopWild then
+    -- judged by what was caught: the other foe may have been the dupe
+    local s = tonumber(mon.species or mon.speciesId)
+    for _, f in ipairs(b.foes or {}) do
+      if f.enc.s == s then
+        if b.verdict == "counts" and f.verdict ~= "counts" then
+          b.verdict, b.why = f.verdict, f.why
+          if f.verdict == "blocked" then b.verdict = "late" end
+        end
+        b.enc = { a = b.enc.a, s = s, h = "wild", sh = f.enc.sh }
+        break
+      end
+    end
+  end
+  local second = b.caught
   b.caught = true
   self.run.known[u] = true
   local x = nil
   if b.verdict == "free" then x = b.why elseif b.verdict ~= "counts" then x = "over" end
+  -- both foes of a wild double caught: only the first is the encounter
+  if second and x == nil then x = "over" end
   local nick = mon.nickname
   self:_append({ k = "catch", a = b.enc.a, s = b.enc.s, u = u, x = x,
                  nm = type(nick) == "string" and nick ~= "" and nick:sub(1, 12) or nil })
@@ -291,6 +353,10 @@ function Tracker:onFainted(ev)
   if b and b.link then return end
   local battler = ev and ev.battler
   if not (battler and (ev.sideName or battler.side) == "player") then return end
+  -- a team battle's player side holds the partner's mons too; their
+  -- faints are the partner's to record
+  local st = ev and ev.battle
+  if b and b.team and st and st.linkOwn ~= nil and tonumber(ev.battlerId) ~= st.linkOwn then return end
   local mon = battler.mon
   local u = self.SL.uid(mon)
   local v = self:view()
