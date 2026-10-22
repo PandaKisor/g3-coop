@@ -499,7 +499,7 @@ Not done, and why: EXP (engine, CODEX-REQUESTS.md 3), three-faint limit
 split decision), a menu entry and trainer sight start (co-op side, next),
 disconnect pause/fallback (D4), mid-battle join (D5).
 
-### Shared story progression (0.8.0-dev.7, port dev.23)
+### Shared story progression (0.8.0-dev.7/8, port dev.23/24)
 
 Codex's design (a): each game runs the fight's own post-battle script
 against its own save. See `porting/full_port/COOP-PROGRESSION.md` for the
@@ -521,8 +521,23 @@ contract. `lib/progress.lua` does the co-op half (protocol 10,
    is done too.
 5. On every connect both games send `have` (every receipt and its
    status). A result the other side lacks is resent. A receipt nobody
-   finished is cancelled. A finished one whose partner lost or called it
-   off is acknowledged, and each keeps its own result.
+   finished is cancelled.
+
+Fallback wins (0.8.0-dev.8, port dev.24). When the partner drops out of a
+started story battle, a game that doesn't win it (END THE BATTLE, or a
+loss alone) leaves its receipt unresolved instead of resolving
+`cancel`/`lose`. The initiator first calls the port's `detach(id)`, then
+halts its held script with `cancel`. The other game's fallback win then
+arrives as an `event` on reconnect and plays like any partner's ending,
+as DESIGN.md requires. Meanwhile the unresolved receipt keeps the port's
+story barrier up. If neither game won, reconnect cancels both.
+
+Different results in the two games (only possible with older receipts) are
+reported as **out of sync**. Nothing acknowledges them, so the barrier
+stays up until both players load saves from before the fight. A replay
+refusal that waiting won't fix (`story_conflict`, build or script
+mismatch) is tried once per visit to the event's map. The player is told
+the reason, and the port's conflict detail is logged. It doesn't spin.
 
 Ids are `g3c:<OT>.<SID>:<counter>:<time>`, with the counter in
 `mod.storage`. Descriptors travel unchanged: `Protocol.copyData` bounds
@@ -531,9 +546,11 @@ than shortening it. Joint credit no longer sets a story trainer's flag
 (the event does), but it still pays the prize.
 
 A story fight the port can't share (`coopContinuationError`, or no
-descriptor, as for Norman, Wallace, Archie, the Museum and Space Center
-fights) is fought alone by the initiator, with a toast. It isn't credited
-to the partner.
+descriptor: since port dev.24 only the Museum and Space Center fights and
+Steven's multi battle; Norman, Wallace and Archie, whose endings finish
+with a warp, now replay) doesn't start, and a toast gives the reason. Since dev.8 it isn't
+fought alone either, because story fights always need both players. It
+waits for the port's authored scene checkpoints.
 
 Verified with two real games on dev.23 against the real Roxanne script:
 - a joint win gives each player a badge and a TM, with done and ack on

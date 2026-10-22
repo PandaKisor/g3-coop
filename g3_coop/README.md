@@ -50,12 +50,17 @@ engine release and the same mods.
     A partner who dropped out (or loaded an older save) gets that ending
     when you reconnect. If they're somewhere else, they're told where to
     go back to.
-  - A few story scenes can't be shared yet (Norman, Wallace, Archie, the
-    Museum and Space Center fights). Each of you fights those alone, in
-    your own game.
+  - A few story scenes can't be shared yet (the Museum and Space Center
+    fights, and Steven's double battle). Those wait for an update: story
+    fights are never fought alone.
   - If your partner drops mid-battle, you choose **CONTINUE ALONE** or
-    **END THE BATTLE** (a draw). Ending a story fight calls it off in your
-    game, and you can fight it again.
+    **END THE BATTLE** (a draw). If either of you wins a story fight that
+    you started together, the win counts for both: the other player gets
+    the ending when you meet again. Until then, further story fights wait.
+    If neither of you won it, it's called off and you can fight it again.
+  - If your two games ever end a story fight differently, you're told the
+    story is out of sync, and story fights stay on hold until you both
+    load saves from before that fight.
 - They never block you. You walk through them, so they can't jam a
   doorway or a puzzle. NPCs walk around them, as they walk around you.
 - **Shared NPCs:** while you're both on the same map, the wandering
@@ -152,7 +157,7 @@ can't start, the toast says why (for example "different engine release").
 
 ## Install
 
-Import **`g3-coop-0.8.0-dev.7.zip`** from the launcher's **MODS** import screen
+Import **`g3-coop-0.8.0-dev.8.zip`** from the launcher's **MODS** import screen
 (the same way as the Inclement package), then enable it. Both players need
 the mod, and the same version of it: 0.7.x refuses to connect to 0.6.x
 or older and says "different co-op version". AUTOCONNECT now waits until
@@ -224,7 +229,8 @@ cd Gen3Mod/gen1recomp-0.3.73 && luajit ../coop/tests/run.lua && luajit ../coop/t
 
 `run_progress.lua` covers shared story progression (`lib/progress.lua`):
 the prepare/result/replay/completion exchange, duplicates, a called-off
-fight, a dropped partner, an older save, and reconnecting.
+fight, a dropped partner (either side, with a fallback win or none), an
+older save, reconnecting, out-of-sync results and replays that can't play.
 
 `run_link.lua` covers the battle/trade layer: request validation, the link
 channel inside the co-op connection (including the engine's real

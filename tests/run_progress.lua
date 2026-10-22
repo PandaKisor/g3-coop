@@ -48,6 +48,10 @@ local function newApi(game)
     if r.status ~= "queued" then return false, r.status end
     if game.map ~= r.descriptor.map then return false, "return_to_map" end
     if game.busy then return false, "script_busy" end
+    if game.conflict then
+      game.refusals = (game.refusals or 0) + 1
+      return false, "story_conflict", { kind = "var", id = 0x4050, before = 0, after = 1, actual = 9 }
+    end
     r.status = "running"
     game.scenes = game.scenes + 1
     game.rewards[id] = (game.rewards[id] or 0) + 1
@@ -60,6 +64,15 @@ local function newApi(game)
     local r = L[id]
     r.status = "done"
     game.emit({ id = id, status = "done", result = r.result })
+  end
+  -- the held script lets go of its receipt (it is halted with "cancel")
+  function api.detach(id)
+    local r = L[id]
+    if not r then return false, "unknown_event" end
+    if not r.origin then return false, "not_bound" end
+    if r.status ~= "battle" or r.result then return false, r.status end
+    r.origin = false
+    return true, r.status
   end
   function api.status(id)
     local r = L[id]
@@ -116,6 +129,7 @@ local function newGame(name)
     idle = function() return not g.busy end,
     held = function() return g.held end,
     mapName = function(m) return m end,
+    map = function() return g.map end,
     log = function() end,
   })
   return g
@@ -273,13 +287,63 @@ pump(2)
 B.p:expected()
 link.up = false
 A.held = nil
-A.p:finish(id6, "cancel")           -- the initiator ended the battle
+T.check(A.p:leave(id6, true), "the initiator ended the battle: it leaves the event open")
+T.eq(A.api.status(id6), "battle", "left open, not called off")
+T.eq(A.api._L[id6].origin, false, "the held script let go of it")
+T.check(#A.api.pending() > 0, "story fights wait meanwhile")
 B.p.live = {}                       -- the partner's game was closed
 link.up = true
 A.p:connected(); B.p:connected()
 pump(6)
 T.eq(B.api.status(id6), "cancelled", "a fight nobody finished is called off on reconnect")
 T.eq(#B.api.pending(), 0, "no stale receipt blocks story fights")
+T.eq(A.api.status(id6), "cancelled", "and in the initiator's game")
+T.eq(#A.api.pending(), 0, "nothing blocks the initiator either")
+
+-- ------------- the initiator dropped and ended it; the partner won alone
+
+local id6b = A.p:begin(descriptor(), function() end, function() end)
+A.held = id6b
+pump(2)
+B.p:expected()
+link.up = false
+A.held = nil
+A.p:leave(id6b, true)                -- A: "end the battle" (or lost alone)
+B.p:finish(id6b, "win")              -- B: continued alone and won
+for _ = 1, 4 do clockNow = clockNow + 1; B.p:tick(); pump(0) end
+pump(1)
+T.eq(B.rewards[id6b], 1, "the survivor played the scene in its own game")
+T.eq(B.api.status(id6b), "done", "survivor done")
+T.eq(select(2, B.api.status(id6b)), false, "survivor waits for the partner")
+link.up = true
+A.p:connected(); B.p:connected()
+pump(8)
+T.eq(A.api.status(id6b), "done", "the fallback win counts for the initiator too")
+T.eq(A.rewards[id6b], 1, "the initiator played the scene once")
+T.eq(select(2, A.api.status(id6b)), true, "both acknowledged")
+T.eq(select(2, B.api.status(id6b)), true, "both acknowledged (survivor)")
+
+-- ------------------ the partner dropped and lost alone; the initiator won
+
+local id6c = A.p:begin(descriptor(), function() end, function() end)
+A.held = id6c
+pump(2)
+B.p:expected()
+link.up = false
+T.check(B.p:leave(id6c, false), "the partner leaves its receipt open")
+originWins(A, id6c)
+for _ = 1, 4 do
+  clockNow = clockNow + 1
+  for _, ev in ipairs(A.events or {}) do A.p:onStatus(ev) end
+  A.events = {}
+  if A.finishing then local i = A.finishing; A.finishing = nil; A.api._ended(i) end
+end
+link.up = true
+A.p:connected(); B.p:connected()
+pump(8)
+T.eq(B.api.status(id6c), "done", "the initiator's fallback win reaches the partner")
+T.eq(B.rewards[id6c], 1, "the partner plays it once")
+T.eq(select(2, A.api.status(id6c)), true, "barrier clears once both are done")
 
 -- ------------------- both carried on alone and ended it differently
 
@@ -299,10 +363,18 @@ end
 link.up = true
 A.p:connected(); B.p:connected()
 pump(6)
+-- (an older co-op resolved a lone loss; now it stays open): out of sync
 T.eq(A.api.status(id7), "done", "the winner keeps its win")
-T.eq(B.api.status(id7), "cancelled", "the loser keeps its loss")
-T.eq(#A.api.pending(), 0, "the winner doesn't wait forever on the loser")
-T.check(#B.toasts > 0, "the conflict is explained")
+T.eq(B.api.status(id7), "cancelled", "the loss can't be changed")
+T.eq(select(2, A.api.status(id7)), false, "the winner isn't acknowledged: no shared result")
+T.check(#A.api.pending() > 0, "story fights stay on hold")
+local function told(g, word)
+  for _, t in ipairs(g.toasts) do if t:find(word, 1, true) then return true end end
+  return false
+end
+T.check(told(A, "out of sync"), "the winner is told the story is out of sync")
+T.check(told(B, "out of sync"), "the loser is told too")
+A.api._L[id7], B.api._L[id7] = nil, nil  -- both reloaded earlier saves
 
 -- --------------------------------------------------- partner elsewhere
 
@@ -326,6 +398,36 @@ B.busy = false
 pump(4)
 T.eq(B.api.status(id8), "done", "replay runs back on the map")
 T.eq(select(2, A.api.status(id8)), true, "and both finish")
+
+-- ----------------------------------- a replay that can't play here
+
+local id9 = A.p:begin(descriptor(), function() end, function() end)
+A.held = id9
+pump(2)
+B.p:expected()
+B.p:finish(id9, "win")
+B.conflict = true
+originWins(A, id9)
+pump(6)
+T.eq(B.api.status(id9), "queued", "a story conflict leaves the event queued")
+T.eq(B.refusals, 1, "it is tried once, not every tick")
+T.check(told(B, "story_conflict"), "the player is told why")
+T.eq(B.p:busy(), false, "a stuck event doesn't hold the field")
+local n = #B.toasts
+B.map = "EM_RUSTBORO_CITY"
+pump(2)
+B.map = "EM_RUSTBORO_CITY_GYM"
+pump(2)
+T.eq(B.refusals, 2, "coming back tries again")
+T.check(#B.toasts > n, "and says so again")
+B.conflict = false
+B.map = "EM_ROUTE_104"
+pump(2)
+B.map = "EM_RUSTBORO_CITY_GYM"
+pump(6)
+T.eq(B.api.status(id9), "done", "once fixed, it plays")
+T.eq(select(2, A.api.status(id9)), true, "and both finish")
+T.eq(Progress.describe({ kind = "var", id = 7, actual = 9 }), "kind=var id=7 actual=9", "conflict detail logged")
 
 -- ------------------------------------------------------ the validator
 

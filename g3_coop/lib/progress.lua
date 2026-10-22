@@ -15,9 +15,15 @@
 --   have     on connect: every saved receipt and its status, so events
 --            made apart (a dropped partner, an older save) catch up
 --
--- Results: "win", "lose" or "cancel" (a fight called off or abandoned).  A
--- game that was dropped from the battle and ended it leaves its receipt
--- unresolved: the partner who carried on alone decides it on reconnect.
+-- Results: "win", "lose" or "cancel" (a fight called off before it began).
+-- A game whose partner dropped out of a started battle and that didn't win
+-- it leaves its receipt unresolved (the initiator detaches its script): the
+-- partner's fallback win still counts for both (porting/DESIGN.md), and on
+-- reconnect it arrives as an event; with no win anywhere it is called off.
+--
+-- Two games that end up with different results are out of sync.  Nothing
+-- here clears that: the barrier stays (no story fight starts) and both
+-- players are told to go back to saves from before the fight.
 --
 -- Pure: main.lua supplies the port's API, the transport and the field.
 
@@ -32,10 +38,12 @@ Progress.RETRY_SECONDS = 0.5
 -- linked to the next joint battle only this long
 Progress.EXPECT_SECONDS = 30
 
-local DIFFERENT = "Your partner's game ended that fight differently: each of you keeps your own result."
+local OUT_OF_SYNC = "Your story is out of sync with your partner's (%s): story fights are on hold. "
+  .. "Both of you load saves from before that fight to fix it."
 
--- replay() refusals that clear on their own
-local WAIT = { script_busy = true, battle_busy = true, ui_busy = true }
+-- replay() refusals that clear on their own (return_to_map: once the player
+-- walks back); any other refusal is stuck until the map or link changes
+local WAIT = { script_busy = true, battle_busy = true, ui_busy = true, return_to_map = true }
 
 -- deps: { api = fn() -> coopProgress API 1 or nil, send = fn(fields) (only
 --         while connected; nil otherwise), connected = fn() -> bool,
@@ -43,11 +51,12 @@ local WAIT = { script_busy = true, battle_busy = true, ui_busy = true }
 --         canJoin = fn() -> bool (free to take a partner's fight),
 --         idle = fn() -> bool (the field can start a scene),
 --         held = fn() -> id of the initiator's own held event or nil,
---         mapName = fn(mapId) -> words, log = fn(fmt, ...) }
+--         mapName = fn(mapId) -> words, map = fn() -> current map id,
+--         log = fn(fmt, ...) }
 function Progress.new(deps)
   return setmetatable({
     d = deps, prep = nil, expect = nil, live = {}, peerDone = {}, told = {},
-    running = {}, nextTry = 0,
+    running = {}, nextTry = 0, stuck = {},
   }, Progress)
 end
 
@@ -67,6 +76,18 @@ function Progress:_tell(id, why, text, secs)
   if self.told[key] then return end
   self.told[key] = true
   self.d.toast(text, secs or 6)
+end
+
+-- the event's map in words, for messages
+function Progress:_where(id)
+  local a = self:api()
+  local r = a and a.get(id)
+  return r and r.descriptor and self.d.mapName(r.descriptor.map) or "that fight"
+end
+
+function Progress:_outOfSync(id)
+  self.d.log("progress %s: out of sync with the partner", id)
+  self:_tell(id, "conflict", OUT_OF_SYNC:format(self:_where(id)), 10)
 end
 
 -- the whole saved receipt, as the port gives it
@@ -122,6 +143,27 @@ function Progress:finish(id, result, quiet)
   local msg = not quiet and self:_event(id, result)
   if msg then self:_send(msg) end
   return st
+end
+
+-- The partner dropped out of the started battle and this game didn't win
+-- it: keep the receipt open for the partner's fallback win.  The initiator
+-- unbinds its held script first (the caller then halts it with "cancel").
+-- Returns false when the port can't (an older one): resolve as usual then.
+function Progress:leave(id, origin)
+  local a = self:api()
+  if not (a and id) then return false end
+  if origin then
+    if not a.detach then return false end
+    local ok, why = a.detach(id)
+    if not ok then
+      self.d.log("progress %s: detach: %s", id, tostring(why))
+      return false
+    end
+  end
+  self:finish(id, nil)
+  self:_tell(id, "left", "The story fight stays open: if your partner won it, you get the result when you meet again. "
+    .. "Story fights wait until then.", 8)
+  return true
 end
 
 -- the initiator's own script was released with a winning result: its
@@ -186,12 +228,7 @@ function Progress:_onEvent(m)
     local ok, why = a.resolve(m.id, m.r)
     if not ok then
       self.d.log("progress %s: resolve %s: %s", m.id, tostring(m.r), tostring(why))
-      if why == "result_conflict" then
-        -- the games ended the fight differently (each player carried on
-        -- alone): each keeps its own; a finished one needn't wait
-        if a.status(m.id) == "done" and m.r ~= "win" then a.ack(m.id) end
-        self:_tell(m.id, "conflict", DIFFERENT, 7)
-      end
+      if why == "result_conflict" then self:_outOfSync(m.id) end
       return
     end
     self.live[m.id] = nil
@@ -212,6 +249,7 @@ end
 function Progress:connected()
   local a = self:api()
   if not a then return end
+  self.stuck = {}
   local list = {}
   for _, id in ipairs(a.history()) do
     local st = a.status(id)
@@ -243,14 +281,9 @@ function Progress:_onHave(m)
       end
     elseif st == "done" and not acked then
       if e.s == "done" then a.ack(id)
-      elseif e.s == "cancelled" then
-        -- each carried on alone and the fight ended differently: each
-        -- keeps its own result, and this one needn't wait
-        a.ack(id)
-        self:_tell(id, "conflict", DIFFERENT, 7)
-      end
+      elseif e.s == "cancelled" then self:_outOfSync(id) end
     elseif st == "cancelled" and (e.s == "done" or e.s == "queued" or e.s == "running") then
-      self:_tell(id, "conflict", DIFFERENT, 7)
+      self:_outOfSync(id)
     end
     if st == "done" and not acked then self:_send({ op = "done", id = id }) end
   end
@@ -292,6 +325,16 @@ function Progress:busy()
   return next(self.running) ~= nil or self.prep ~= nil
 end
 
+-- a story_conflict's detail, for the log
+function Progress.describe(detail)
+  if type(detail) ~= "table" then return "" end
+  local parts = {}
+  for _, k in ipairs({ "kind", "map", "id", "key", "before", "after", "actual" }) do
+    if detail[k] ~= nil then parts[#parts + 1] = k .. "=" .. tostring(detail[k]) end
+  end
+  return table.concat(parts, " ")
+end
+
 -- ------------------------------------------------------------ each tick
 
 function Progress:tick()
@@ -303,21 +346,33 @@ function Progress:tick()
   local a = self:api()
   if not a then return end
   local held = self.d.held()
+  local here = self.d.map()
   for _, id in ipairs(a.pending()) do
     local st = a.status(id)
-    if st == "queued" and id ~= held and not self.running[id] and self.d.idle() then
-      local ok, why = a.replay(id)
+    local stuck = self.stuck[id]
+    if stuck and stuck.map ~= here then
+      -- walked away and back: try again, and say so again if it still can't
+      self.stuck[id] = nil
+      self.told[id .. "|" .. stuck.why] = nil
+      stuck = nil
+    end
+    if st == "queued" and id ~= held and not stuck and not self.running[id] and self.d.idle() then
+      local ok, why, detail = a.replay(id)
       if ok then
         self.running[id] = a.status(id) == "running" or nil
+        return
       elseif why == "return_to_map" then
-        local r = a.get(id)
-        local where = r and r.descriptor and self.d.mapName(r.descriptor.map) or "where the fight was"
-        self:_tell(id, why, "Go back to " .. tostring(where) .. " to finish the story event with your partner.", 8)
-      elseif not WAIT[why] then
-        self.d.log("progress %s: replay: %s", id, tostring(why))
-        self:_tell(id, why, "The story event couldn't play here (" .. tostring(why) .. ").", 8)
+        self:_tell(id, why, "Go back to " .. self:_where(id) .. " to finish the story event with your partner.", 8)
+        return
+      elseif WAIT[why] then
+        return
       end
-      return
+      -- won't clear by waiting (a story conflict, a different build): say
+      -- what and why, keep the barrier, and try again on another visit
+      self.stuck[id] = { why = tostring(why), map = here }
+      self.d.log("progress %s: replay refused: %s %s", id, tostring(why), Progress.describe(detail))
+      self:_tell(id, tostring(why), ("The story event at %s can't play in your game (%s). Story fights are on hold: "
+        .. "both of you load saves from before that fight to fix it."):format(self:_where(id), tostring(why)), 10)
     elseif st == "failed" then
       self:_tell(id, "failed", "The story scene failed. Reload your last save before going on.", 10)
     end

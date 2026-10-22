@@ -602,6 +602,10 @@ return function(mod)
       return not (Space and Space.vm and Space.vm.isRunning and Space.vm:isRunning())
     end,
     held = function() return heldTrainer and heldTrainer.event end,
+    map = function()
+      local Space = engine("scripting.space")
+      return Space and Space.mapId
+    end,
     mapName = function(map)
       local words = tostring(map or ""):gsub("^EM_", ""):gsub("_", " ")
       return words ~= "" and words or nil
@@ -622,8 +626,16 @@ return function(mod)
     local r = word == "win" and "win" or (word == "lose" or word == "whiteout") and "lose"
       or (h.cancel and "cancel" or "lose")
     if h.event then
-      pcall(progress.finish, progress, h.event, r)
-      if r == "win" then progress:started(h.event) end
+      -- the partner dropped out and this game didn't win: the fight stays
+      -- open for their fallback win, and the script stops here
+      local okL, left = false, false
+      if h.dropped and r ~= "win" then okL, left = pcall(progress.leave, progress, h.event, true) end
+      if okL and left then
+        r = "cancel"
+      else
+        pcall(progress.finish, progress, h.event, r)
+        if r == "win" then progress:started(h.event) end
+      end
     end
     pcall(h.done, r)
   end
@@ -1186,6 +1198,8 @@ return function(mod)
   end
   mod.events:on("battle.coop_paused", function(ev)
     if not (activity and activity.kind == "team") then return end
+    if teamState then teamState.dropped = true end
+    if heldTrainer then heldTrainer.dropped = true end
     pausePanel = { sel = 1, name = (session and session.peer and session.peer.name)
       or (teamState and teamState.peerName) or "Your partner" }
   end)
@@ -1536,6 +1550,12 @@ return function(mod)
   -- a joint fight (rival, gym, story) is never credited; a cart's mod may
   -- say which trainers those are (mod.exports.coopStoryTrainer(id) -> bool)
   local function storyTrainer(id)
+    -- the port's list, as its engine holds it (also before a game exists)
+    local P = engine("coop_progress")
+    if P and type(P.story) == "function" then
+      local ok, r = pcall(P.story, id)
+      if ok and type(r) == "boolean" then return r end
+    end
     for mid, ex in pairs(game and game.mods and game.mods.exports or {}) do
       if mid ~= "g3_coop" and type(ex) == "table" and type(ex.coopStoryTrainer) == "function" then
         local ok, r = pcall(ex.coopStoryTrainer, id)
@@ -1683,13 +1703,15 @@ return function(mod)
         return true
       end
       if shared and type(opts.coopContinuation) ~= "table" then
+        -- story fights are never fought alone (porting/DESIGN.md): one
+        -- whose scene the port can't share yet waits for a later port
         local info = trainerInfo(tid)
-        toast(("%s %s's scene can't be shared yet (%s): fight it alone; %s plays it in their own game."):format(
+        toast(("%s %s's scene can't be shared yet (%s). Story fights need both of you, so this one waits for an update."):format(
           tostring(info.className or "TRAINER"), tostring(info.name or ""),
-          tostring(opts.coopContinuationError or "not supported"),
-          tostring(session.peer and session.peer.name or "your partner")), 8)
+          tostring(opts.coopContinuationError or "not supported")), 8)
         mod.log:warn("story trainer %d not shared: %s", tid, tostring(opts.coopContinuationError or "no continuation"))
-        return false
+        pcall(opts.done, cancel)
+        return true
       end
       local Field = engine("field")
       if Field and Field.lock then Field.lock(WILD_LOCK) end
@@ -1758,7 +1780,19 @@ return function(mod)
       if teamState.event then
         local r = ev and ev.result
         r = r == "win" and "win" or (r == "lose" or r == "whiteout") and "lose" or "cancel"
-        local okF, errF = pcall(progress.finish, progress, teamState.event, r)
+        local okF, errF
+        if teamState.dropped and r ~= "win" then
+          -- the partner left mid-battle: their fallback win may still
+          -- count, so this game leaves it open (the initiator's held
+          -- script detaches when it is released)
+          if not (heldTrainer and heldTrainer.event == teamState.event) then
+            okF, errF = pcall(progress.leave, progress, teamState.event, false)
+          else
+            okF = true
+          end
+        else
+          okF, errF = pcall(progress.finish, progress, teamState.event, r)
+        end
         if not okF then mod.log:warn("story event: %s", tostring(errF)) end
       end
       if ev and ev.result == "win" and not teamState.wild then
