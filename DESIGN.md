@@ -499,7 +499,7 @@ Not done, and why: EXP (engine, CODEX-REQUESTS.md 3), three-faint limit
 split decision), a menu entry and trainer sight start (co-op side, next),
 disconnect pause/fallback (D4), mid-battle join (D5).
 
-### Shared story progression (0.8.0-dev.7/8, port dev.23/24)
+### Shared story progression (0.8.0-dev.7–9, port dev.23–25)
 
 Codex's design (a): each game runs the fight's own post-battle script
 against its own save. See `porting/full_port/COOP-PROGRESSION.md` for the
@@ -545,10 +545,27 @@ depth, nodes and string length, and refuses data that is too big rather
 than shortening it. Joint credit no longer sets a story trainer's flag
 (the event does), but it still pays the prize.
 
+Scenes with several fights (0.8.0-dev.9, port dev.25). Each fight has its own
+event, and `descriptor.chain` names the one before it. The port completes a
+phase when the script reaches the next fight. The player whose game started
+the scene leads (the event ids carry the starting player). At each next fight
+the leader prepares the event (with a 90 s prep window) and asks for a joint
+fight. The follower's replay stops at the same fight, and the port binds the
+follower's script to the leader's event (`opts.coopBound`), or co-op does when
+the prep arrives later. The follower then answers and auto-joins, and each game
+carries on in its own script. If the partner can't follow (no link, outside the
+scene), the leader fights alone with the event, and the follower takes that
+result at the same point, or replays it on reconnect (`chain_wait` keeps the
+order). A follower whose link drops, or whose leader doesn't come within
+120 s, stops the scene there with the event left open.
+
+Steven's Space Center multi is a native special battle. Its checkpoint
+resumes at the script's win branch, after the party specials, so the
+partner's game never runs them. In co-op the partner takes Steven's place,
+and his lent POKeMON (`stevenPartner`) stay out of your team.
+
 A story fight the port can't share (`coopContinuationError`, or no
-descriptor: since port dev.24 only the Museum and Space Center fights and
-Steven's multi battle; Norman, Wallace and Archie, whose endings finish
-with a warp, now replay) doesn't start, and a toast gives the reason. Since dev.8 it isn't
+descriptor; none of the Emerald story fights since port dev.25) doesn't start, and a toast gives the reason. Since dev.8 it isn't
 fought alone either, because story fights always need both players. It
 waits for the port's authored scene checkpoints.
 

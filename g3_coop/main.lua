@@ -577,6 +577,9 @@ return function(mod)
     end
     return nil
   end
+  local releaseHeld
+  -- how long a follower's script waits at a scene's next fight
+  local FOLLOW_SECONDS = 120
   local progress = Progress.new({
     api = progressApi,
     send = function(fields) if session then session:sendProg(fields) end end,
@@ -585,9 +588,11 @@ return function(mod)
     -- saved at once (mod.storage), with the time in case an older save
     -- comes back: never the same id for two events
     newId = function()
-      local okR, n = pcall(mod.storage.read, mod.storage, game, "event_seq")
-      n = (okR and tonumber(n) or 0) + 1
-      pcall(mod.storage.write, mod.storage, game, "event_seq", n)
+      -- (storage keeps data tables only)
+      local okR, v = pcall(mod.storage.read, mod.storage, game, "event_seq")
+      local n = (okR and type(v) == "table" and tonumber(v.n) or 0) + 1
+      local okW, wrote, why = pcall(mod.storage.write, mod.storage, game, "event_seq", { n = n })
+      if not (okW and wrote) then mod.log:warn("event counter not saved: %s", tostring(why or wrote)) end
       local gs = gameSession() or {}
       return ("g3c:%d.%d:%d:%d"):format(tonumber(gs.trainerId) or 0, tonumber(gs.secretId) or 0,
         n, os.time())
@@ -602,6 +607,16 @@ return function(mod)
       return not (Space and Space.vm and Space.vm.isRunning and Space.vm:isRunning())
     end,
     held = function() return heldTrainer and heldTrainer.event end,
+    ownPrefix = function()
+      local gs = gameSession()
+      return gs and ("g3c:%d.%d:"):format(tonumber(gs.trainerId) or 0, tonumber(gs.secretId) or 0) or nil
+    end,
+    -- the leader fought a scene's later fight alone: our waiting script
+    -- takes that result (a joint battle releases it itself)
+    onResult = function(id, r)
+      local h = heldTrainer
+      if h and h.follow and h.event == id and not activity then releaseHeld(r) end
+    end,
     map = function()
       local Space = engine("scripting.space")
       return Space and Space.mapId
@@ -617,7 +632,7 @@ return function(mod)
   -- finished) "cancel", which halts the script without its post-battle
   -- part; an engine without "cancel" gets "lose" (a "draw" would count as
   -- beaten).  A shared story event takes the same result first.  Once.
-  local function releaseHeld(word)
+  releaseHeld = function(word)
     local h = heldTrainer
     heldTrainer = nil
     if not (h and h.done) then return end
@@ -748,7 +763,14 @@ return function(mod)
     return Requests.new({
       session = function() return session end, now = clock,
       firstId = role == "host" and 1 or 2, ui = ui,
-      canPrompt = fieldFree, eligible = eligible, wave = wave, start = startActivity,
+      -- a follower's script waits at a scene's next fight for the leader's
+      canPrompt = function()
+        if fieldFree() then return true end
+        local h = heldTrainer
+        return h ~= nil and h.follow == true and h.event ~= nil and not activity
+          and game ~= nil and game.phase == "field"
+      end,
+      eligible = eligible, wave = wave, start = startActivity,
     })
   end
 
@@ -932,6 +954,23 @@ return function(mod)
     if g.phase == "field" then
       local okP, errP = pcall(progress.tick, progress)
       if not okP then mod.log:warn("story events: %s", tostring(errP)) end
+      -- a follower waiting at a scene's next fight whose leader is gone (or
+      -- never comes): stop the scene here, leaving its event open; the
+      -- leader's result plays the rest when you meet again
+      local h = heldTrainer
+      if h and h.follow and not activity then
+        h.since = h.since or clock()
+        local linked = session and session.state == "connected"
+        if not linked or clock() - h.since > FOLLOW_SECONDS then
+          heldTrainer = nil
+          progress:unfollow()
+          local Field = engine("field")
+          if Field and Field.unlock then Field.unlock(WILD_LOCK) end
+          if h.event then pcall(progress.leave, progress, h.event, true) end
+          pcall(h.done, "cancel")
+          toast("The scene stops here for now: you get the rest of it when you meet your partner again.", 7)
+        end
+      end
     end
     if menuPending and fieldFree() then
       menuPending = false
@@ -1683,9 +1722,66 @@ return function(mod)
   -- A story fight first has both games prepare its shared event (the
   -- port's continuation), so the partner's game plays the same post-battle
   -- script; one the port can't share yet is fought alone.
+  local CALLED_OFF_WORD
+  -- A later fight of a scene with several (the Museum, the Space Center):
+  -- lib/progress.lua "chain".  The player who started the scene leads; the
+  -- other's replay waits here for them.  Returns what the bridge hook does.
+  local function chainedFight(m, g, foe, opts, tid, plan)
+    local Field = engine("field")
+    local name = tostring(session and session.peer and session.peer.name or "your partner")
+    local function solo(why)
+      -- the scene began together: this fight's win counts for both
+      heldTrainer = nil
+      if Field and Field.unlock then Field.unlock(WILD_LOCK) end
+      toast(("%s isn't here for this fight (%s): you fight it, and %s gets the result."):format(name, tostring(why), name), 6)
+      return false
+    end
+    if not progress:own(opts.coopChain) then
+      -- follower: hold the script until the leader's fight (or its result)
+      if Field and Field.lock then Field.lock(WILD_LOCK) end
+      heldTrainer = { done = opts.done, noWhiteout = opts.noWhiteout, cancel = true, follow = true,
+                      event = opts.coopBound }
+      progress:follow(opts.coopChain, tid, opts.coopBound, function(id)
+        if heldTrainer and heldTrainer.follow then heldTrainer.event = id end
+      end)
+      toast("Waiting for " .. name .. " to start the next fight...", 5)
+      return true
+    end
+    local connected = session and session.state == "connected" and not session:stale()
+    if not connected then
+      local id, why = progress:solo(opts.coopContinuation)
+      if not id then mod.log:warn("chained event: %s", tostring(why)) end
+      return solo("not connected")
+    end
+    if Field and Field.lock then Field.lock(WILD_LOCK) end
+    heldTrainer = { done = opts.done, noWhiteout = opts.noWhiteout, cancel = true }
+    local function fightAlone(why)
+      if not heldTrainer then return end
+      heldTrainer = nil
+      if Field and Field.unlock then Field.unlock(WILD_LOCK) end
+      toast(("%s isn't here for this fight (%s): you fight it, and %s gets the result."):format(name, tostring(why), name), 6)
+      Bridge._g3coopStart(m, g, foe, opts)
+    end
+    local id, why = progress:begin(opts.coopContinuation, function()
+      if not heldTrainer then return end
+      if not requests:request("joint", function() fightAlone("no answer") end, plan.trainerIds) then
+        fightAlone("busy")
+      end
+    end, function(w) fightAlone(CALLED_OFF_WORD(w)) end)
+    if not id then
+      mod.log:warn("chained event for trainer %d: %s", tid, tostring(why))
+      progress:solo(opts.coopContinuation)
+      return solo(tostring(why))
+    end
+    heldTrainer.event = id
+    toast("Waiting for " .. name .. " for the next fight...", 5)
+    return true
+  end
+
   local CALLED_OFF = {
     no_reply = "no answer", busy = "partner busy", no_api = "partner's game can't share it",
   }
+  CALLED_OFF_WORD = function(why) return CALLED_OFF[why] or tostring(why) end
   if Bridge then
     Bridge._g3coopTrainer = function(m, g, foe, opts)
       local tid = tonumber(opts.trainerId)
@@ -1695,6 +1791,9 @@ return function(mod)
       local story = plan.story == true
       local shared = story and progress:api() ~= nil
       local cancel = progress:api() and "cancel" or "lose"
+      if shared and opts.coopChain and type(opts.coopContinuation) == "table" then
+        return chainedFight(m, g, foe, opts, tid, plan)
+      end
       if not partnerCanJoin() then
         if not story then return false end
         -- the gate let it through, but the partner is gone since

@@ -66,11 +66,13 @@ end
 -- E: { LB, TowerLink, Trainers, TextIR } (main.lua teamEngine)
 
 -- this player's half: name, gender, trainer id and the mons that can go
--- into a battle, with the party slot each came from
+-- into a battle, with the party slot each came from.  A story partner's
+-- mons the engine lent for the fight (Steven's, marked stevenPartner) stay
+-- out: in co-op the other player takes that partner's place.
 function TeamBattle.mySide(E, session)
   local party, slots = {}, {}
   for i, mon in ipairs(session.party or {}) do
-    if #party < TeamBattle.MAX_PARTY and E.LB.eligible(mon) then
+    if #party < TeamBattle.MAX_PARTY and E.LB.eligible(mon) and not mon.stevenPartner then
       party[#party + 1] = plainCopy(mon)
       slots[#party] = i
     end

@@ -21,6 +21,15 @@
 -- partner's fallback win still counts for both (porting/DESIGN.md), and on
 -- reconnect it arrives as an event; with no win anywhere it is called off.
 --
+-- A scene with several fights (the Museum, the Space Center) has an event per
+-- fight, each naming the one before (descriptor.chain).  The game that started
+-- the scene leads: at each next fight it prepares the next event and asks the
+-- partner, whose replay of the phase before stops at the same fight (the port
+-- binds its script there).  Both then fight it together and each game carries
+-- on in its own script.  If the partner isn't there, the leader fights it
+-- alone (the scene began together, so a win counts) and the partner takes that
+-- result at the same point later.
+--
 -- Two games that end up with different results are out of sync.  Nothing
 -- here clears that: the barrier stays (no story fight starts) and both
 -- players are told to go back to saves from before the fight.
@@ -32,6 +41,8 @@ Progress.__index = Progress
 
 -- how long the initiator waits for the partner to prepare
 Progress.PREP_SECONDS = 8
+-- ...a later fight in a scene: the partner's replay may still be talking
+Progress.CHAIN_PREP_SECONDS = 90
 -- how often a queued replay is tried while the field is busy
 Progress.RETRY_SECONDS = 0.5
 -- a prepared receipt the partner never fought (no battle started) is
@@ -43,7 +54,7 @@ local OUT_OF_SYNC = "Your story is out of sync with your partner's (%s): story f
 
 -- replay() refusals that clear on their own (return_to_map: once the player
 -- walks back); any other refusal is stuck until the map or link changes
-local WAIT = { script_busy = true, battle_busy = true, ui_busy = true, return_to_map = true }
+local WAIT = { script_busy = true, battle_busy = true, ui_busy = true, return_to_map = true, chain_wait = true }
 
 -- deps: { api = fn() -> coopProgress API 1 or nil, send = fn(fields) (only
 --         while connected; nil otherwise), connected = fn() -> bool,
@@ -52,11 +63,13 @@ local WAIT = { script_busy = true, battle_busy = true, ui_busy = true, return_to
 --         idle = fn() -> bool (the field can start a scene),
 --         held = fn() -> id of the initiator's own held event or nil,
 --         mapName = fn(mapId) -> words, map = fn() -> current map id,
+--         ownPrefix = fn() -> this player's event id prefix,
+--         onResult = fn(id, result) (a partner's result arrived),
 --         log = fn(fmt, ...) }
 function Progress.new(deps)
   return setmetatable({
     d = deps, prep = nil, expect = nil, live = {}, peerDone = {}, told = {},
-    running = {}, nextTry = 0, stuck = {},
+    running = {}, nextTry = 0, stuck = {}, waiter = nil, deferred = {},
   }, Progress)
 end
 
@@ -100,8 +113,16 @@ end
 
 -- ----------------------------------------------------- the initiator side
 
+-- an event this game started (ids carry the starting player)
+function Progress:own(id)
+  local pre = self.d.ownPrefix and self.d.ownPrefix()
+  return type(id) == "string" and pre ~= nil and id:sub(1, #pre) == pre
+end
+
 -- Prepare the held fight's event and ask the partner to prepare it too.
 -- ready(id) runs once both games have it; failed(why) once it can't be.
+-- A later fight of a scene (descriptor.chain) waits longer, and a failure
+-- keeps the event: the caller fights it alone.
 -- Returns the event id, or nil plus why (nothing was sent).
 function Progress:begin(descriptor, ready, failed)
   local a = self:api()
@@ -110,7 +131,7 @@ function Progress:begin(descriptor, ready, failed)
   local id = self.d.newId()
   local ok, why = a.prepare(id, descriptor, true)
   if not ok then return nil, why end
-  self.prep = { id = id, at = self.d.now(), ready = ready, failed = failed }
+  self.prep = { id = id, at = self.d.now(), ready = ready, failed = failed, chain = descriptor.chain ~= nil }
   self.live[id] = true
   self:_send({ op = "prep", id = id, d = descriptor })
   return id
@@ -121,8 +142,41 @@ function Progress:_prepFailed(why, refused)
   local p = self.prep
   self.prep = nil
   if not p then return end
+  if p.chain then
+    if p.failed then p.failed(why) end
+    return
+  end
   self:finish(p.id, "cancel", refused)
   if p.failed then p.failed(why) end
+end
+
+-- A later fight of a scene with nobody to share it: prepare its event here
+-- only (bound to the held script); the partner gets it on reconnect.
+function Progress:solo(descriptor)
+  local a = self:api()
+  if not a then return nil, "no_api" end
+  local id = self.d.newId()
+  local ok, why = a.prepare(id, descriptor, true)
+  if not ok then return nil, why end
+  return id
+end
+
+-- The follower's script is waiting at a later fight of the leader's scene.
+-- bound: the port already bound it to the leader's prepared event (send the
+-- answer we held back); else onBound(id) runs when the leader's prep comes.
+function Progress:follow(chain, trainerId, bound, onBound)
+  if bound then
+    if self.deferred[bound] then
+      self.deferred[bound] = nil
+      self:_send({ op = "prepped", id = bound, ok = true })
+    end
+    return
+  end
+  self.waiter = { chain = chain, trainer = trainerId, cb = onBound }
+end
+
+function Progress:unfollow()
+  self.waiter = nil
 end
 
 -- A local result for event id: "win", "lose", "cancel", or nil (this game
@@ -190,6 +244,7 @@ function Progress:_onPrep(m)
     self:_send({ op = "prepped", id = m.id, ok = false, why = "no_api" })
     return
   end
+  if type(m.d) == "table" and m.d.chain then return self:_onChainPrep(a, m) end
   if not self.d.canJoin() then
     self:_send({ op = "prepped", id = m.id, ok = false, why = "busy" })
     return
@@ -197,6 +252,26 @@ function Progress:_onPrep(m)
   local ok, why = a.prepare(m.id, m.d, false)
   if ok then self.expect = { id = m.id, at = self.d.now() } end
   self:_send({ op = "prepped", id = m.id, ok = ok == true, why = not ok and tostring(why) or nil })
+end
+
+-- The leader's next fight: ours if our script waits there, else prepared now
+-- and answered once our replay reaches it (the port binds it then).
+function Progress:_onChainPrep(a, m)
+  local function no(why) self:_send({ op = "prepped", id = m.id, ok = false, why = why }) end
+  if a.status(m.d.chain) == "unknown" then return no("busy") end
+  local w = self.waiter
+  if w and w.chain == m.d.chain and w.trainer == m.d.trainerId then
+    local ok, why = a.prepare(m.id, m.d, true)
+    if not ok then return no(tostring(why)) end
+    self.waiter = nil
+    if w.cb then w.cb(m.id) end
+    self.live[m.id] = true
+    return self:_send({ op = "prepped", id = m.id, ok = true })
+  end
+  local ok, why = a.prepare(m.id, m.d, false)
+  if not ok then return no(tostring(why)) end
+  self.live[m.id] = true
+  self.deferred[m.id] = true
 end
 
 function Progress:_onPrepped(m)
@@ -232,7 +307,9 @@ function Progress:_onEvent(m)
       return
     end
     self.live[m.id] = nil
+    self.deferred[m.id] = nil
     if self.expect and self.expect.id == m.id then self.expect = nil end
+    if self.d.onResult then self.d.onResult(m.id, m.r) end
   end
   -- they may be waiting to hear we finished
   if a.status(m.id) == "done" then self:_send({ op = "done", id = m.id }) end
@@ -310,6 +387,9 @@ function Progress:onStatus(ev)
   end
   self.running[ev.id] = nil
   if ev.status == "done" then
+    -- the result too: a follower waiting at the next fight may need it
+    local msg = self:_event(ev.id)
+    if msg and msg.r then self:_send(msg) end
     self:_send({ op = "done", id = ev.id })
     if self.peerDone[ev.id] then
       self.peerDone[ev.id] = nil
@@ -340,7 +420,9 @@ end
 function Progress:tick()
   local now = self.d.now()
   local p = self.prep
-  if p and now - p.at > Progress.PREP_SECONDS then self:_prepFailed("no_reply") end
+  if p and now - p.at > (p.chain and Progress.CHAIN_PREP_SECONDS or Progress.PREP_SECONDS) then
+    self:_prepFailed("no_reply")
+  end
   if now < self.nextTry then return end
   self.nextTry = now + Progress.RETRY_SECONDS
   local a = self:api()
@@ -364,9 +446,12 @@ function Progress:tick()
       elseif why == "return_to_map" then
         self:_tell(id, why, "Go back to " .. self:_where(id) .. " to finish the story event with your partner.", 8)
         return
+      elseif why == "chain_wait" then
+        -- the scene's earlier fight plays first (it may be later in the list)
       elseif WAIT[why] then
         return
       end
+      if WAIT[why] then goto continue end
       -- won't clear by waiting (a story conflict, a different build): say
       -- what and why, keep the barrier, and try again on another visit
       self.stuck[id] = { why = tostring(why), map = here }
@@ -376,6 +461,7 @@ function Progress:tick()
     elseif st == "failed" then
       self:_tell(id, "failed", "The story scene failed. Reload your last save before going on.", 10)
     end
+    ::continue::
   end
 end
 

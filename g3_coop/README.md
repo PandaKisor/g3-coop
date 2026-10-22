@@ -50,9 +50,12 @@ engine release and the same mods.
     A partner who dropped out (or loaded an older save) gets that ending
     when you reconnect. If they're somewhere else, they're told where to
     go back to.
-  - A few story scenes can't be shared yet (the Museum and Space Center
-    fights, and Steven's double battle). Those wait for an update: story
-    fights are never fought alone.
+  - Scenes with several fights in a row (the Museum, the Space Center) are
+    shared fight by fight: whoever started the scene leads, and the other
+    player's game waits at each next fight so you fight it together. If one
+    of you isn't there for a later fight, the other fights it and the win
+    counts for both. In Steven's double battle your partner takes Steven's
+    place.
   - If your partner drops mid-battle, you choose **CONTINUE ALONE** or
     **END THE BATTLE** (a draw). If either of you wins a story fight that
     you started together, the win counts for both: the other player gets
@@ -157,7 +160,7 @@ can't start, the toast says why (for example "different engine release").
 
 ## Install
 
-Import **`g3-coop-0.8.0-dev.8.zip`** from the launcher's **MODS** import screen
+Import **`g3-coop-0.8.0-dev.9.zip`** from the launcher's **MODS** import screen
 (the same way as the Inclement package), then enable it. Both players need
 the mod, and the same version of it: 0.7.x refuses to connect to 0.6.x
 or older and says "different co-op version". AUTOCONNECT now waits until

@@ -265,6 +265,11 @@ do
   T.eq(Team.settlePrize(E, {}, { 1, 1 }, {}), 100, "an id twice in one call pays once")
   local st = { coopTeam = true, eliminated = {}, coopSolo = true }
   T.eq(Team.onFainted({}, { battle = st, battlerId = 0 }), false, "no faint limit once alone")
+  -- Steven's multi lends his mons into the party; the partner replaces him
+  local side = Team.mySide({ LB = { eligible = function() return true end } },
+    { name = "MAY", trainerId = 1, party = { { species = 1 }, { species = 2 }, { species = 3, stevenPartner = true } } })
+  T.eq(#side.party, 2, "a story partner's lent POKeMON stay out of the team")
+  T.eq(side.slots[2], 2, "own POKeMON keep their party slots")
 end
 
 -- ------- presence

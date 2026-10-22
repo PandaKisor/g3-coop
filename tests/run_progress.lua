@@ -46,6 +46,8 @@ local function newApi(game)
     if not r then return false, "unknown_event" end
     if r.status == "done" or r.status == "cancelled" then return true, r.status end
     if r.status ~= "queued" then return false, r.status end
+    local chain = r.descriptor.chain
+    if chain and not (L[chain] and L[chain].status == "done") then return false, "chain_wait" end
     if game.map ~= r.descriptor.map then return false, "return_to_map" end
     if game.busy then return false, "script_busy" end
     if game.conflict then
@@ -130,6 +132,7 @@ local function newGame(name)
     held = function() return g.held end,
     mapName = function(m) return m end,
     map = function() return g.map end,
+    ownPrefix = function() return "g3c:" .. g.name .. ":" end,
     log = function() end,
   })
   return g
@@ -428,6 +431,32 @@ pump(6)
 T.eq(B.api.status(id9), "done", "once fixed, it plays")
 T.eq(select(2, A.api.status(id9)), true, "and both finish")
 T.eq(Progress.describe({ kind = "var", id = 7, actual = 9 }), "kind=var id=7 actual=9", "conflict detail logged")
+
+-- --------------------------------------------- scenes with several fights
+
+-- a partner without the scene's earlier fight can't follow the next one;
+-- the leader keeps its event (it fights alone)
+local cd = descriptor(266)
+cd.chain = "g3c:A:999:1"
+local chainFail
+local cid = A.p:begin(cd, function() error("must not start") end, function(w) chainFail = w end)
+pump(3)
+T.eq(chainFail, "busy", "a partner outside the scene refuses the next fight")
+T.eq(A.api.status(cid), "battle", "the leader keeps the event to fight alone")
+T.check(A.p:own(cid), "the leader's own event")
+T.eq(B.p:own(cid), false, "not the partner's")
+A.api._L[cid] = nil
+-- a later phase listed first doesn't hold up the phase it follows
+local first = descriptor(265)
+local idx = "g3c:Z:1:1"
+local idy = "g3c:Y:2:1"       -- sorts first, but follows idx
+local second = descriptor(266)
+second.chain = idx
+B.api.prepare(idx, first, false); B.api.resolve(idx, "win")
+B.api.prepare(idy, second, false); B.api.resolve(idy, "win")
+pump(8)
+T.eq(B.api.status(idx), "done", "the earlier fight plays first")
+T.eq(B.api.status(idy), "done", "then the later one")
 
 -- ------------------------------------------------------ the validator
 
