@@ -470,6 +470,9 @@ T.eq(LevelCap.clampExp(14, expAt(14) + 10, 5000, 15, expAt), expAt(15) - expAt(1
   "EXP below the cap only reaches the cap's level")
 T.eq(LevelCap.clampExp(15, expAt(15), 5000, 15, expAt), 0, "at the cap a POKeMON gains nothing")
 T.eq(LevelCap.clampExp(15, expAt(15), 5000, nil, expAt), 5000, "without a cap, everything")
+T.eq(LevelCap.named("RIVAL, ROUTE 103", 0), "MAY, ROUTE 103", "a boy's next rival fight names May")
+T.eq(LevelCap.named("RIVAL, RUSTBORO", 1), "BRENDAN, RUSTBORO", "a girl's names Brendan")
+T.eq(LevelCap.named("ROXANNE", 0), "ROXANNE", "other fights keep their label")
 
 local Constants = require("src.core.game3.constants")
 for _, g in ipairs({ { "emerald", LevelCap.EMERALD }, { "ruby", LevelCap.RUBY }, { "firered", LevelCap.FIRERED } }) do

@@ -398,7 +398,11 @@ return function(mod)
     local version = Constants.versionOf(s)
     local C = Constants.of(version)
     local ctx = Space.vm and Space.vm.ctx
-    return LevelCap.compute(LevelCap.listFor(version),
+    local function named(r)
+      if type(r) == "table" and version == "emerald" then r.label = LevelCap.named(r.label, s.gender) end
+      return r
+    end
+    return named(LevelCap.compute(LevelCap.listFor(version),
       function(name)
         local ok, id = pcall(C.id, C, "trainers", name)
         return ok and tonumber(id) or nil
@@ -418,7 +422,7 @@ return function(mod)
           aceOf[id] = top
         end
         return aceOf[id] or nil
-      end)
+      end))
   end
 
   -- the next big fight, worked out whether or not caps are on (the status

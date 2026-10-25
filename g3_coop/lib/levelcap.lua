@@ -24,6 +24,13 @@ local function rival(place, key)
   return { label = "RIVAL, " .. place, names = names }
 end
 
+-- An Emerald rival fight's label with the rival's name: a boy plays
+-- against MAY, a girl against BRENDAN (gender 0 = boy)
+function LevelCap.named(label, gender)
+  if type(label) ~= "string" or label:sub(1, 7) ~= "RIVAL, " or gender == nil then return label end
+  return (tonumber(gender) == 1 and "BRENDAN" or "MAY") .. label:sub(6)
+end
+
 local function kantoRival(place, key)
   local names = {}
   for _, mon in ipairs({ "SQUIRTLE", "BULBASAUR", "CHARMANDER" }) do
