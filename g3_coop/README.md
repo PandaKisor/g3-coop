@@ -162,7 +162,7 @@ can't start, the toast says why (for example "different engine release").
 
 ## Install
 
-Import **`g3_coop-0.8.1.zip`** (from https://github.com/PandaKisor/g3-coop/releases)
+Import **`g3_coop-0.8.2.zip`** (from https://github.com/PandaKisor/g3-coop/releases)
 from the launcher's **MODS** import screen, then enable it. On the Emerald
 Doubles Soul Link cart you don't need to: importing the cart downloads it. Both players need
 the mod, and the same version of it: 0.7.x refuses to connect to 0.6.x

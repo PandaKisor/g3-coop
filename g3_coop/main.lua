@@ -1736,7 +1736,10 @@ return function(mod)
     -- a link battle without a team activity is a versus battle, even when
     -- this game didn't open the activity: never encounters or faints
     local st = ev and ev.battle
-    if activity and activity.kind == "team" then
+    if Bridge and Bridge._campaignPractice then
+      -- the campaign's MOVE ANIMS practice battle: no encounter, no faints
+      ev = { kind = "link" }
+    elseif activity and activity.kind == "team" then
       ev = { kind = (teamState and teamState.wild) and "coopwild" or "coopteam", battle = ev and ev.battle }
     elseif activity or (type(st) == "table" and st.link and not st.coopTeam) then
       ev = { kind = "link" }
