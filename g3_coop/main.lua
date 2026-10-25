@@ -1913,6 +1913,13 @@ return function(mod)
     return partnerHere() and not activity and not heldTrainer and not progress:busy()
       and not (requests and (requests.outgoing or requests.busy))
   end
+  -- co-op is on: connected, hosting or joining, or reconnecting after a
+  -- drop.  Story fights only wait for the partner then; with co-op off the
+  -- game plays solo (user, 2026-10-25), Soul Link run or not.
+  local function coopActive()
+    if retryAt then return true end
+    return session ~= nil and session.state ~= "refused" and session.state ~= "closed"
+  end
 
   -- The joint-fight gate (user, 2026-10-21): a rival, gym or story fight
   -- doesn't start unless the partner can be in it, offline included.  The
@@ -1929,11 +1936,12 @@ return function(mod)
     for _, id in ipairs(ids) do
       if tonumber(id) and storyTrainer(tonumber(id)) then story = true end
     end
-    if not story or partnerCanJoin() then return base or { action = "allow" } end
+    if not story or not coopActive() or partnerCanJoin() then return base or { action = "allow" } end
     local name = session and session.peer and session.peer.name
-    return { action = "wait", text = name
+    return { action = "wait", text = (name
       and ("This fight is for both of you.\nWait for " .. tostring(name) .. " to be here.")
-      or "This fight is for both of you.\nPlease wait for your partner." }
+      or "This fight is for both of you.\nPlease wait for your partner.")
+      .. "\nTo fight alone, stop co-op in\nSTART > CO-OP." }
   end)
 
   -- A trainer battle the script is about to start becomes a team battle
@@ -1972,6 +1980,10 @@ return function(mod)
     if not connected then
       local id, why = progress:solo(opts.coopContinuation)
       if not id then mod.log:warn("chained event: %s", tostring(why)) end
+      if not coopActive() then
+        heldTrainer = nil
+        return false
+      end
       return solo("not connected")
     end
     if Field and Field.lock then Field.lock(WILD_LOCK) end
@@ -2016,7 +2028,7 @@ return function(mod)
         return chainedFight(m, g, foe, opts, tid, plan)
       end
       if not partnerCanJoin() then
-        if not story then return false end
+        if not story or not coopActive() then return false end
         -- the gate let it through, but the partner is gone since
         toast("Your partner isn't here any more: this fight waits for both of you.", 6)
         pcall(opts.done, cancel)

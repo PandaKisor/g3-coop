@@ -570,6 +570,10 @@ T.eq(sa4.reason, "timeout", "and times out after 15")
 
 local Runtime = require("src.mods.Runtime")
 local root = coop
+-- the engine's story-trainer list (the port's coop_progress): Roxanne only
+local realProgress = package.loaded["src.core.game3.coop_progress"]
+package.loaded["src.core.game3.coop_progress"] = setmetatable({ story = function(id) return id == 265 end },
+  { __index = realProgress })
 local run = T.sdk.loadMod("g3_coop", { root = root, generation = 3, data = T.sdk.gen3Data() })
 T.eq(#run.errors, 0, "loads clean (" .. tostring(run.errors[1]) .. ")")
 T.check(Runtime.wantsHook("input.step"), "ticks on input.step")
@@ -651,7 +655,19 @@ hostedOn, joinedTo, portTaken = nil, nil, false
 Runtime.call("input.key", function() end, { phase = "field" }, { phase = "pressed", key = "f8" })
 T.eq(hostedOn, nil, "a JOIN to another computer never hosts")
 T.eq(joinedTo, "192.168.4.40:7777", "it just dials")
+-- the joint-fight gate (user, 2026-10-25): a story fight waits for the
+-- partner only while co-op is on; solo, it just starts
+local function gate()
+  local r = Runtime.call("trainer.joint_gate", function() return nil end, 265, "single", {})
+  return type(r) == "table" and r.action or r
+end
+T.eq(gate(), "wait", "with co-op on and no partner here, Roxanne waits")
+local box = Runtime.call("trainer.joint_gate", function() return nil end, 265, "single", {})
+T.check(tostring(box and box.text):find("START > CO-OP", 1, true) ~= nil, "and the box says how to fight alone")
 Runtime.call("input.key", function() end, { phase = "field" }, { phase = "pressed", key = "f8" })
+T.eq(gate(), "allow", "with co-op off, Roxanne fights solo")
+T.eq(Runtime.call("trainer.joint_gate", function() return nil end, 300, "single", {}).action, "allow",
+  "an ordinary trainer is never gated")
 
 -- leaving the game must close the socket, or the relaunched process
 -- inherits a port nobody answers on

@@ -43,8 +43,10 @@ engine release and the same mods.
   - An ordinary TRAINER asks your partner the same way. You fight them
     together, and each of you gets the full prize. A TRAINER you beat
     alone counts as beaten in your partner's game too.
-  - Rival, gym and story fights need you both. If your partner isn't
-    there, a box tells you to wait, and you can walk away. When they are
+  - Rival, gym and story fights need you both while co-op is on. If your
+    partner isn't there, a box tells you to wait, and you can walk away.
+    With co-op off (START > CO-OP > STOP or LEAVE), every fight starts
+    as usual, so the game plays fine solo, Soul Link run or not. When they are
     there, they're pulled in. Afterwards **both games play the fight's
     ending**: each of you gets your own badge, TM, gift and story changes.
     A partner who dropped out (or loaded an older save) gets that ending
@@ -160,7 +162,7 @@ can't start, the toast says why (for example "different engine release").
 
 ## Install
 
-Import **`g3_coop-0.8.0.zip`** (from https://github.com/PandaKisor/g3-coop/releases)
+Import **`g3_coop-0.8.1.zip`** (from https://github.com/PandaKisor/g3-coop/releases)
 from the launcher's **MODS** import screen, then enable it. On the Emerald
 Doubles Soul Link cart you don't need to: importing the cart downloads it. Both players need
 the mod, and the same version of it: 0.7.x refuses to connect to 0.6.x
