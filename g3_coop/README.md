@@ -160,8 +160,9 @@ can't start, the toast says why (for example "different engine release").
 
 ## Install
 
-Import **`g3-coop-0.8.0-dev.9.zip`** from the launcher's **MODS** import screen
-(the same way as the Inclement package), then enable it. Both players need
+Import **`g3_coop-0.8.0.zip`** (from https://github.com/PandaKisor/g3-coop/releases)
+from the launcher's **MODS** import screen, then enable it. On the Emerald
+Doubles Soul Link cart you don't need to: importing the cart downloads it. Both players need
 the mod, and the same version of it: 0.7.x refuses to connect to 0.6.x
 or older and says "different co-op version". AUTOCONNECT now waits until
 you are in the overworld (0.7.2), so your partner sees your trainer name and
