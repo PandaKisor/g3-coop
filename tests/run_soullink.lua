@@ -289,6 +289,13 @@ T.check(found and found.mine.name == "BOLT" and found.mine.dead and found.status
   "with nicknames and who is dead")
 T.check(found and found.mine.s == 40 and found.theirs.s == 10, "and each side's species, for the icons")
 T.eq(pan.partner, "BRENDAN", "the panel names the partner")
+do
+  local fell
+  for _, r in ipairs(pan.fallen) do if r.area == "AREA18" then fell = r end end
+  T.check(fell and fell.status == "dead" and fell.mine.name == "BOLT" and fell.theirs.why == "linked: partner fell",
+    "FALLEN: a dead link shows who fell and who went with them")
+  T.check(pan.stats.dead >= 1 and pan.stats.caught[1] >= 1 and pan.stats.caught[2] >= 1, "RUN: the tallies")
+end
 
 -- ------- hard rules
 
@@ -330,8 +337,26 @@ T.eq(C:isBanned(gC.party[1]), false, "a living catch may battle")
 C:onBattleStarted({ kind = "trainer" })
 C:onFainted({ sideName = "enemy", battler = { side = "enemy", mon = mon(31, 300, 10) } })
 T.eq(C:view().dead["31:300"], nil, "the other side's faints are not ours")
+C.d.faintCause = function() return "YOUNGSTER JOEY" end
 C:onFainted({ sideName = "player", battler = { side = "player", mon = gC.party[1] } })
 T.check(C:view().dead["31:300"], "our POKeMON fainting in a trainer battle is recorded as it happens")
+do
+  local log = SL.log(C.run, C.tid)
+  local ev = log[#log]
+  T.check(ev.k == "faint" and ev.by == "YOUNGSTER JOEY" and ev.a == gC.sec and ev.lv == gC.party[1].level,
+    "the faint says where, to what, and at what level")
+  local m = Protocol.validate(Protocol.sl({ run = "r", tid = "1-A", nm = "MAY", rules = RULES, from = 1, want = 1,
+    ev = { ev, { k = "faint", u = "1:1", by = ("X"):rep(40) } } }))
+  T.check(m and m.ev[1].by == "YOUNGSTER JOEY" and m.ev[1].a == ev.a and m.ev[1].lv == ev.lv,
+    "and the details cross the link")
+  T.check(m and m.ev[2] and m.ev[2].k == "faint" and m.ev[2].by == nil, "an overlong cause is dropped, not the faint")
+  local pan = C:panel()
+  local row
+  for _, r in ipairs(pan.fallen) do if r.mine and r.mine.fell then row = r end end
+  T.check(row and row.mine.why:find("vs YOUNGSTER JOEY", 1, true) and row.mine.why:find("AREA" .. gC.sec, 1, true),
+    "the FALLEN tab lists it with where and what beat it")
+  T.check(pan.stats and pan.stats.fainted[1] >= 1 and pan.stats.lastFall, "and the RUN tab counts it")
+end
 T.check(C:isBanned(gC.party[1]), "and under hard rules it can't battle any more")
 gC.party[1].hp = 0
 C:onBattleEnded({})
@@ -536,6 +561,43 @@ do
                 battler = { side = "player", partyIndex = 8, mon = gW.party[3] } })
   T.eq(#SL.log(W.run, W.tid), before + 1, "a partner-owned slot is theirs wherever it stands")
   W:onBattleEnded({})
+end
+
+-- the panel draws every tab, with Soul Link on or off
+do
+  local Hud = dofile(here .. "/lib/hud.lua")
+  local printed = {}
+  local font = { getWidth = function(_, t) return #t * 6 end, getHeight = function() return 12 end }
+  local gfx = setmetatable({
+    newFont = function() return font end, getFont = function() return font end,
+    print = function(t) printed[#printed + 1] = t end,
+  }, { __index = function() return function() end end })
+  local hud = Hud.new(gfx)
+  local data = A2:panel()
+  local view = { rules = { { label = "SOUL LINK", on = true }, { label = "HARD RULES", on = false, locked = true } },
+                 sel = 2, locked = "BRENDAN hosts", nextFight = { label = "BRAWLY", ace = 19, cap = 19 } }
+  local function drew(text)
+    for _, t in ipairs(printed) do if t:find(text, 1, true) then return true end end
+    return false
+  end
+  for _, tab in ipairs(Hud.TABS) do
+    printed = {}
+    view.tab = tab
+    local ok, err = pcall(hud.drawPanel, hud, { scale = 3, width = 720, height = 480 }, data, nil, view)
+    T.check(ok, "the " .. tab .. " tab draws" .. (ok and "" or (": " .. tostring(err))))
+  end
+  printed = {}
+  view.tab = "RUN"
+  hud:drawPanel({ scale = 3, width = 720, height = 480 }, data, nil, view)
+  T.check(drew("BRAWLY (ace Lv19)"), "RUN shows the next big fight")
+  printed = {}
+  view.tab = "FALLEN"
+  hud:drawPanel({ scale = 3, width = 720, height = 480 }, data, nil, view)
+  T.check(drew("BOLT"), "FALLEN shows the fallen")
+  printed = {}
+  view.tab = "LINKS"
+  hud:drawPanel({ scale = 3, width = 720, height = 480 }, nil, nil, view)
+  T.check(drew("HARD RULES") and drew("is off"), "with Soul Link off the panel opens on RULES")
 end
 
 T.finish("g3_coop soul link")

@@ -1,7 +1,7 @@
 {
   "id": "g3_coop",
   "name": "Gen 3 Co-op",
-  "version": "0.8.0-dev.9",
+  "version": "0.8.0-dev.12",
   "api": 2,
   "entry": "main.lua",
   "options_schema": "options.lua",

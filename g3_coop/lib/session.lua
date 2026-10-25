@@ -36,7 +36,7 @@ function Session.new(net, role, localHello, deps)
     net = net, role = role, localHello = localHello,
     P = deps.Protocol, compat = deps.compat, now = now, offsetOf = deps.offsetOf,
     Channel = deps.Channel, channels = {}, requests = {}, early = {}, earlyCount = 0,
-    emotes = 0, lastEmote = nil, npcs = {}, sl = {}, teams = {}, credits = {}, progs = {},
+    emotes = 0, lastEmote = nil, npcs = {}, sl = {}, teams = {}, credits = {}, progs = {}, scenes = {},
     presence = deps.Presence.new(), ghost = deps.Ghost.new(),
     state = "waiting", reason = nil, peer = nil, peerBusy = "none", busy = "none",
     helloSent = false, lastHeard = t, lastSent = t, pairedAt = nil,
@@ -111,6 +111,8 @@ function Session:_receive(raw)
       end
     elseif msg.type == P.PROG then
       if #self.progs < 256 then self.progs[#self.progs + 1] = msg end
+    elseif msg.type == P.SCENE then
+      if #self.scenes < 8 then self.scenes[#self.scenes + 1] = msg end
     elseif msg.type == P.CREDIT then
       if #self.credits < 64 then self.credits[#self.credits + 1] = msg end
     elseif msg.type == P.TEAM then
@@ -230,6 +232,17 @@ end
 function Session:takeCredits()
   local list = self.credits
   self.credits = {}
+  return list
+end
+
+-- mirrored story scenes (main.lua SCENES)
+function Session:sendScene(key, map, x, y, facing, localId)
+  if self.state == "connected" then self:_send(self.P.scene(key, map, x, y, facing, localId)) end
+end
+
+function Session:takeScenes()
+  local list = self.scenes
+  self.scenes = {}
   return list
 end
 

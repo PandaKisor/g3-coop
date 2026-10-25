@@ -32,6 +32,8 @@ Protocol.TEAM = "coop_team"
 Protocol.CREDIT = "coop_credit"
 Protocol.MAX_CREDIT_IDS = 512
 Protocol.PROG = "coop_prog"
+-- story scenes both players watch: one starts it, the other's game joins
+Protocol.SCENE = "coop_scene"
 
 Protocol.MAX_NAME = 16
 Protocol.MAX_MAP = 64
@@ -266,6 +268,12 @@ function Protocol.copyData(v)
   return walk(v, 0)
 end
 
+-- a mirrored story scene (main.lua SCENES): script key, the object talked
+-- to, the starter's facing (1-4) and where they stand on map
+function Protocol.scene(key, map, x, y, facing, localId)
+  return { type = Protocol.SCENE, key = key, map = map, x = x, y = y, facing = facing, localId = localId }
+end
+
 function Protocol.bye(reason)
   return { type = Protocol.BYE, reason = reason }
 end
@@ -431,6 +439,13 @@ local function slEvent(e)
     out.nm = slName(e.nm)
     if not out.nm then return nil end
   end
+  if e.k == "faint" then
+    -- where and to what (optional)
+    out.a = int(e.a, 0, 1023)
+    local by = str(e.by, 24)
+    out.by = by and (by:gsub("[^%w %-%.!?'&]", "?")) or nil
+    out.lv = int(e.lv, 1, 100)
+  end
   return out
 end
 
@@ -521,6 +536,16 @@ validators[Protocol.BYE] = function(m)
 end
 
 -- a fresh, copied message, or nil plus a reason; unknown types are dropped
+validators[Protocol.SCENE] = function(m)
+  local key = str(m.key, 128, "^[%w_:]+$")
+  local map = str(m.map, Protocol.MAX_MAP, "^[%w_]+$")
+  local x, y = coord(m.x), coord(m.y)
+  local facing = int(m.facing, 1, 4)
+  local localId = m.localId == nil and 0 or int(m.localId, 0, Protocol.MAX_NPC_ID)
+  if not (key and map and x and y and facing and localId) then return nil, "bad_scene" end
+  return { type = m.type, key = key, map = map, x = x, y = y, facing = facing, localId = localId }
+end
+
 function Protocol.validate(m)
   if type(m) ~= "table" or type(m.type) ~= "string" then return nil, "not_a_message" end
   local check = validators[m.type]

@@ -351,6 +351,9 @@ function Tracker:onFainted(ev)
   if not self:ensure() then return end
   local b = self.battle
   if b and b.link then return end
+  -- versus battles are played with copies (and restored after)
+  local live = ev and ev.battle
+  if type(live) == "table" and live.link and not live.coopTeam and not (b and b.team) then return end
   local battler = ev and ev.battler
   if not (battler and (ev.sideName or battler.side) == "player") then return end
   -- a team battle's player side holds the partner's mons too; their
@@ -369,7 +372,10 @@ function Tracker:onFainted(ev)
   local v = self:view()
   if not (u and v.tracked[u]) or v.dead[u] or self.d.isEgg(mon) then return end
   self.d.toast(("Soul Link: %s fainted."):format(tostring(self:_monName(u, mon.species))), 5)
-  self:_append({ k = "faint", u = u })
+  -- where, and to what (the FALLEN list)
+  local by = self.d.faintCause and self.d.faintCause(st)
+  self:_append({ k = "faint", u = u, a = self.d.areaOf(), by = by and tostring(by):sub(1, 24) or nil,
+                 lv = tonumber(mon.level) })
 end
 
 -- May not battle (hard rules on): dead, or caught against the rules.
@@ -674,7 +680,80 @@ function Tracker:panel()
     out.extras[#out.extras + 1] = { name = self:_monName(e.u, e.s), s = e.s, why = e.why,
                                     dead = v.dead[e.u] == true }
   end
+  out.fallen = self:_fallen(v)
+  out.stats = self:_stats(v)
   return out
+end
+
+-- Why a run POKeMON is gone, for the FALLEN list.
+local function faintCause(self, ev)
+  local where = ev.a and self.d.areaName(ev.a) or nil
+  local parts = {}
+  if where then parts[#parts + 1] = where end
+  if ev.by then parts[#parts + 1] = "vs " .. ev.by end
+  if ev.lv then parts[#parts + 1] = "Lv" .. ev.lv end
+  if #parts == 0 then return "fainted" end
+  return table.concat(parts, ", ")
+end
+
+-- One row per lost link (dead or broken), in area order, plus run
+-- POKeMON outside the links that fell: { area, status, mine, theirs },
+-- each side { name, s, why } (why: where it fell / "linked" / "missed").
+function Tracker:_fallen(v)
+  local byUid = {}
+  for _, ev in ipairs(v.mine.faintList) do byUid[ev.u] = ev end
+  for _, ev in ipairs(v.theirs.faintList) do byUid[ev.u] = ev end
+  local function side(ar, other)
+    if not ar then return nil end
+    if ar.state == "failed" then return { name = "missed", s = ar.s, why = "got away / KO'd", missed = true } end
+    if ar.state ~= "caught" then return nil end
+    local ev = byUid[ar.u]
+    local why
+    if ev then why = faintCause(self, ev)
+    elseif other and other.state == "failed" then why = "link broken"
+    else why = "linked: partner fell" end
+    return { name = self:_monName(ar.u, ar.s), s = ar.s, why = why, fell = ev ~= nil }
+  end
+  local out = {}
+  for _, row in ipairs(v.pairs) do
+    -- (a catch can fall while its link still waits for the partner's)
+    local fell = (row.mine and row.mine.u and byUid[row.mine.u]) or (row.theirs and row.theirs.u and byUid[row.theirs.u])
+    if row.status == "dead" or row.status == "broken" or fell then
+      out[#out + 1] = { area = self.d.areaName(row.a), status = row.status == "broken" and "broken" or "dead",
+                        mine = side(row.mine, row.theirs), theirs = side(row.theirs, row.mine) }
+    end
+  end
+  -- free catches (shiny, gifts...) that fell
+  for _, who in ipairs({ "mine", "theirs" }) do
+    for _, e in ipairs(v[who].extras) do
+      local ev = byUid[e.u]
+      if ev then
+        local cell = { name = self:_monName(e.u, e.s), s = e.s, why = faintCause(self, ev), fell = true }
+        out[#out + 1] = { area = self.d.areaName(e.a), status = "extra",
+                          mine = who == "mine" and cell or nil, theirs = who == "theirs" and cell or nil }
+      end
+    end
+  end
+  return out
+end
+
+-- The run in numbers, for the RUN tab.
+function Tracker:_stats(v)
+  local st = { alive = 0, dead = 0, broken = 0, waiting = 0,
+               caught = { 0, 0 }, extra = { #v.mine.extras, #v.theirs.extras },
+               fainted = { #v.mine.faintList, #v.theirs.faintList },
+               missed = { v.mine.misses, v.theirs.misses }, areas = #v.pairs }
+  for _, row in ipairs(v.pairs) do
+    st[row.status] = (st[row.status] or 0) + 1
+    if row.mine and row.mine.state == "caught" then st.caught[1] = st.caught[1] + 1 end
+    if row.theirs and row.theirs.state == "caught" then st.caught[2] = st.caught[2] + 1 end
+  end
+  -- the most recent of our own faints
+  local last = v.mine.faintList[#v.mine.faintList]
+  if last then
+    st.lastFall = { name = self:_monName(last.u, v.mine.species[last.u]), why = faintCause(self, last) }
+  end
+  return st
 end
 
 return Tracker

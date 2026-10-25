@@ -183,9 +183,15 @@ end
 
 -- ------------------------------------------------------- the Soul Link panel
 
+Hud.TABS = { "LINKS", "FALLEN", "RUN", "RULES" }
+
 -- data: Tracker:panel() (nil when Soul Link is off).  iconFor(species) ->
--- { image, quads } or nil.  Returns the largest useful scroll value.
-function Hud:drawPanel(vp, data, iconFor)
+-- { image, quads } or nil.  view: { tab = one of Hud.TABS, rules = {
+-- { label, on, locked } ... }, sel = the RULES cursor, locked = text or
+-- nil, nextFight = { label, ace, cap } or nil }.  Returns the largest
+-- useful scroll value.
+function Hud:drawPanel(vp, data, iconFor, view)
+  view = view or {}
   self:_setup(vp, true)
   local g = self.gfx
   local pad = math.max(4, self.u * 3)
@@ -195,49 +201,36 @@ function Hud:drawPanel(vp, data, iconFor)
   self:_box(x, y, width, height, 1, C.sl)
   local cx, cy = x + pad * 1.5, y + pad
   local right = x + width - pad
+  local cp = math.max(2, self.u)
+  local tab = view.tab or "LINKS"
+  if not data then tab = "RULES" end
 
-  if not data then
-    self:_print("SOUL LINK", cx, cy, C.sl)
-    local msg = "Soul Link is off. Turn on SOUL LINK in the launcher: Settings > Gen 3 Co-op. "
-      .. "Both players need it on; the host's rules apply to both."
-    for i, l in ipairs(Hud.wrap(function(s) return self:w(s) end, msg, width - pad * 3)) do
-      self:_print(l, cx, cy + i * self.lh * 1.2, C.dim)
-    end
-    self:_print("F7 closes", cx, y + height - pad - self.lh, C.dim)
-    return 0
-  end
-
-  -- header: title, partner, tally; then the rule chips
+  -- header: title, partner, tally
   self:_print("SOUL LINK", cx, cy, C.sl)
   local tx = cx + self:w("SOUL LINK ")
-  self:_print(data.partner and ("with " .. data.partner) or "no partner yet", tx, cy, C.text)
-  local tally = ("%d alive  %d gone"):format(data.alive, data.gone)
-  self:_print(tally, right - self:w(tally), cy, C.dim)
-  cy = cy + self.lh + pad / 2
-  local chipX = cx
-  local cp = math.max(2, self.u)
-  for _, rule in ipairs(data.rules) do
-    local w = self:w(rule) + cp * 2
-    local col = rule == "HARD" and C.bad or rule == "ENFORCED" and C.warn or C.sl
-    g.setColor(col[1], col[2], col[3], 0.22)
-    g.rectangle("fill", chipX, cy, w, self.lh, cp, cp)
-    self:_print(rule, chipX + cp, cy, col)
-    chipX = chipX + w + cp * 2
-  end
-  if data.cap then
-    local text = ("LEVEL CAP %d: %s"):format(data.cap.level, tostring(data.cap.label))
-    local w = self:w(text) + cp * 2
-    if chipX + w > right then
-      chipX = cx
-      cy = cy + self.lh + cp * 2
-    end
-    g.setColor(C.warn[1], C.warn[2], C.warn[3], 0.2)
-    g.rectangle("fill", chipX, cy, w, self.lh, cp, cp)
-    self:_print(text, chipX + cp, cy, C.warn)
+  if data then
+    self:_print(data.partner and ("with " .. data.partner) or "no partner yet", tx, cy, C.text)
+    local tally = ("%d alive  %d gone"):format(data.alive, data.gone)
+    self:_print(tally, right - self:w(tally), cy, C.dim)
+  else
+    self:_print("is off", tx, cy, C.dim)
   end
   cy = cy + self.lh + pad / 2
 
-  if data.over then
+  -- the tabs
+  local tabX = cx
+  for _, name in ipairs(Hud.TABS) do
+    local w = self:w(name) + cp * 4
+    local on = name == tab
+    local usable = data ~= nil or name == "RULES"
+    g.setColor(C.sl[1], C.sl[2], C.sl[3], on and 0.4 or 0.12)
+    g.rectangle("fill", tabX, cy, w, self.lh + cp, cp, cp)
+    self:_print(name, tabX + cp * 2, cy + cp / 2, on and C.text or usable and C.sl or C.dim)
+    tabX = tabX + w + cp * 2
+  end
+  cy = cy + self.lh + cp + pad / 2
+
+  if data and data.over then
     g.setColor(C.bad[1], C.bad[2], C.bad[3], 0.25)
     g.rectangle("fill", x + pad, cy, width - pad * 2, self.lh + cp * 2, cp, cp)
     local msg = "NO POKeMON left that can battle"
@@ -245,103 +238,200 @@ function Hud:drawPanel(vp, data, iconFor)
     cy = cy + self.lh + cp * 2 + pad / 2
   end
 
-  -- the table
-  local iconS = math.max(1, math.floor(self.lh / 13))
-  local rowH = math.max(math.floor(self.lh * 1.6), 28 * iconS)
-  local areaW = 0
-  for _, r in ipairs(data.rows) do areaW = math.max(areaW, self:w(r.area)) end
-  areaW = math.min(math.max(areaW, self:w("AREA")), math.floor(width * 0.3))
-  local pillW = self:w("WAITING") + cp * 2
-  local colW = math.floor((width - pad * 3 - areaW - pillW - pad * 3) / 2)
-  local colA = cx
-  local colM = colA + areaW + pad
-  local colT = colM + colW + pad
-  local colP = right - pillW
-  self:_print("AREA", colA, cy, C.dim)
-  self:_print("YOU", colM, cy, C.dim)
-  self:_print(data.partner or "PARTNER", colT, cy, C.dim)
-  cy = cy + self.lh + cp
-
-  local items = {}
-  for _, r in ipairs(data.rows) do items[#items + 1] = r end
-  if #data.extras > 0 then
-    items[#items + 1] = { heading = "OUTSIDE THE LINKS" }
-    for _, e in ipairs(data.extras) do items[#items + 1] = { extra = e } end
-  end
-  if #items == 0 then
-    self:_print("No encounters yet. Your first one in each area counts.", colA, cy + cp, C.dim)
-  end
-
-  local bottom = y + height - pad - self.lh - cp
-  local fit = math.max(1, math.floor((bottom - cy) / rowH))
-  local maxScroll = math.max(0, #items - fit)
-  self.scroll = math.max(0, math.min(self.scroll, maxScroll))
-
   local function clip(text, w)
     text = tostring(text)
     if self:w(text) <= w then return text end
     while #text > 1 and self:w(text .. ".") > w do text = text:sub(1, -2) end
     return text .. "."
   end
-  local function monCell(c, px, py, w)
-    if not c then
-      self:_print("-", px, py + (rowH - self.lh) / 2, C.dim)
-      return
-    end
-    local icon = c.state == "caught" and c.s and iconFor and iconFor(c.s)
-    local iw = 0
-    if icon and icon.image and icon.quads then
-      local q = icon.quads[0]
-      if q then
-        if c.dead then g.setColor(0.55, 0.45, 0.45, 0.55) else g.setColor(1, 1, 1, 1) end
-        -- the 32x32 frame's mon sits in its lower part
-        g.draw(icon.image, q, px, py + math.floor((rowH - 32 * iconS) / 2) - 2 * iconS, 0, iconS, iconS)
-        iw = 32 * iconS
-      end
-    end
-    local col = c.state ~= "caught" and C.dim or c.dead and C.bad or C.text
-    local name = clip(c.state == "caught" and c.name or ("(" .. c.name .. ")"), w - iw)
-    local ty = py + (rowH - self.lh) / 2
-    self:_print(name, px + iw, ty, col)
-    if c.dead then
-      g.setColor(C.bad[1], C.bad[2], C.bad[3], 0.9)
-      local th = math.max(2, math.floor(self.lh / 10))
-      g.rectangle("fill", px + iw, math.floor(ty + self.lh / 2 - th / 2), self:w(name), th)
-    end
+  local iconS = math.max(1, math.floor(self.lh / 13))
+  local function icon(c, px, py, rowH)
+    local ic = c.s and iconFor and iconFor(c.s)
+    if not (ic and ic.image and ic.quads and ic.quads[0]) then return 0 end
+    if c.dead then g.setColor(0.55, 0.45, 0.45, 0.55) else g.setColor(1, 1, 1, 1) end
+    -- the 32x32 frame's mon sits in its lower part
+    g.draw(ic.image, ic.quads[0], px, py + math.floor((rowH - 32 * iconS) / 2) - 2 * iconS, 0, iconS, iconS)
+    return 32 * iconS
+  end
+  local function strike(px, ty, text)
+    g.setColor(C.bad[1], C.bad[2], C.bad[3], 0.9)
+    local th = math.max(2, math.floor(self.lh / 10))
+    g.rectangle("fill", px, math.floor(ty + self.lh / 2 - th / 2), self:w(text), th)
   end
 
+  local bottom = y + height - pad - self.lh - cp
+  local items, rowH, drawRow, foot = {}, math.max(math.floor(self.lh * 1.6), 28 * iconS), nil, nil
+
+  if tab == "LINKS" then
+    local areaW = 0
+    for _, r in ipairs(data.rows) do areaW = math.max(areaW, self:w(r.area)) end
+    areaW = math.min(math.max(areaW, self:w("AREA")), math.floor(width * 0.3))
+    local pillW = self:w("WAITING") + cp * 2
+    local colW = math.floor((width - pad * 3 - areaW - pillW - pad * 3) / 2)
+    local colA, colM = cx, cx + areaW + pad
+    local colT, colP = colM + colW + pad, right - pillW
+    self:_print("AREA", colA, cy, C.dim)
+    self:_print("YOU", colM, cy, C.dim)
+    self:_print(data.partner or "PARTNER", colT, cy, C.dim)
+    cy = cy + self.lh + cp
+    for _, r in ipairs(data.rows) do items[#items + 1] = r end
+    if #data.extras > 0 then
+      items[#items + 1] = { heading = "OUTSIDE THE LINKS" }
+      for _, e in ipairs(data.extras) do items[#items + 1] = { extra = e } end
+    end
+    if #items == 0 then
+      self:_print("No encounters yet. Your first one in each area counts.", colA, cy + cp, C.dim)
+    end
+    local function monCell(c, px, py, w)
+      if not c then
+        self:_print("-", px, py + (rowH - self.lh) / 2, C.dim)
+        return
+      end
+      local iw = c.state == "caught" and icon(c, px, py, rowH) or 0
+      local col = c.state ~= "caught" and C.dim or c.dead and C.bad or C.text
+      local name = clip(c.state == "caught" and c.name or ("(" .. c.name .. ")"), w - iw)
+      local ty = py + (rowH - self.lh) / 2
+      self:_print(name, px + iw, ty, col)
+      if c.dead then strike(px + iw, ty, name) end
+    end
+    drawRow = function(it, ry)
+      local ty = ry + (rowH - self.lh) / 2
+      if it.heading then
+        self:_print(it.heading, colA, ty, C.sl)
+      elseif it.extra then
+        local e = it.extra
+        monCell({ name = e.name, s = e.s, state = "caught", dead = e.dead }, colM, ry, colW)
+        local why = e.why == "over" and "not allowed" or e.why
+        self:_print(why, colT, ty, e.why == "over" and C.bad or C.dim)
+      else
+        self:_print(clip(it.area, areaW), colA, ty, C.text)
+        monCell(it.mine, colM, ry, colW)
+        monCell(it.theirs, colT, ry, colW)
+        local p = PILL[it.status] or PILL.waiting
+        local col = p[2]
+        g.setColor(col[1], col[2], col[3], 0.2)
+        g.rectangle("fill", colP, ty, pillW, self.lh, cp, cp)
+        self:_print(p[1], colP + (pillW - self:w(p[1])) / 2, ty, col)
+      end
+    end
+
+  elseif tab == "FALLEN" then
+    rowH = math.max(math.floor(self.lh * 2.6), 30 * iconS)
+    local areaW = math.min(math.max(self:w("AREA"), math.floor(width * 0.2)), math.floor(width * 0.25))
+    local colW = math.floor((width - pad * 4 - areaW) / 2)
+    local colA, colM = cx, cx + areaW + pad
+    local colT = colM + colW + pad
+    self:_print("AREA", colA, cy, C.dim)
+    self:_print("YOU", colM, cy, C.dim)
+    self:_print(data.partner or "PARTNER", colT, cy, C.dim)
+    cy = cy + self.lh + cp
+    for _, r in ipairs(data.fallen or {}) do items[#items + 1] = r end
+    if #items == 0 then self:_print("Nobody has fallen yet.", colA, cy + cp, C.good) end
+    local function cell(c, px, py, w)
+      if not c then
+        self:_print("-", px, py + (rowH - self.lh) / 2, C.dim)
+        return
+      end
+      local iw = not c.missed and icon({ s = c.s, dead = true }, px, py, rowH) or 0
+      local ty = py + math.floor((rowH - self.lh * 2) / 2)
+      local name = clip(c.name, w - iw)
+      self:_print(name, px + iw, ty, c.missed and C.dim or C.bad)
+      if not c.missed then strike(px + iw, ty, name) end
+      self:_print(clip(c.why, w - iw), px + iw, ty + self.lh, C.dim)
+    end
+    drawRow = function(it, ry)
+      local ty = ry + (rowH - self.lh * 2) / 2
+      self:_print(clip(it.area, areaW), colA, ty, C.text)
+      local label = it.status == "broken" and "BROKEN" or it.status == "extra" and "FREE CATCH" or "DEAD"
+      self:_print(label, colA, ty + self.lh, it.status == "extra" and C.dim or C.bad)
+      cell(it.mine, colM, ry, colW)
+      cell(it.theirs, colT, ry, colW)
+    end
+
+  elseif tab == "RUN" then
+    rowH = math.floor(self.lh * 1.4)
+    local st = data.stats or {}
+    local partner = data.partner or "Partner"
+    local function pair(t) return t and ("you %d   %s %d"):format(t[1] or 0, partner, t[2] or 0) or "-" end
+    local nf = view.nextFight
+    items = {
+      { "Links", ("%d alive   %d dead   %d broken   %d waiting"):format(st.alive or 0, st.dead or 0,
+        st.broken or 0, st.waiting or 0), C.text },
+      { "Areas used", tostring(st.areas or 0), C.text },
+      { "Linked catches", pair(st.caught), C.text },
+      { "Free catches", pair(st.extra), C.text },
+      { "Fainted", pair(st.fainted), (st.fainted and (st.fainted[1] + st.fainted[2]) > 0) and C.bad or C.text },
+      { "Encounters missed", pair(st.missed), C.text },
+      { "Last to fall", st.lastFall and (st.lastFall.name .. " (" .. st.lastFall.why .. ")") or "nobody yet",
+        st.lastFall and C.bad or C.good },
+      { "Next big fight", nf and (nf.label .. " (ace Lv" .. tostring(nf.ace) .. ")") or "none left", C.warn },
+      { "Level cap", (nf and nf.cap) and tostring(nf.cap) or "off", nf and nf.cap and C.warn or C.dim },
+      { "Rules", #data.rules > 0 and table.concat(data.rules, "  ") or "none", C.sl },
+    }
+    local keyW = 0
+    for _, it in ipairs(items) do keyW = math.max(keyW, self:w(it[1])) end
+    drawRow = function(it, ry)
+      self:_print(it[1], cx, ry, C.dim)
+      self:_print(clip(it[2], right - cx - keyW - pad * 2), cx + keyW + pad * 2, ry, it[3])
+    end
+
+  else -- RULES
+    rowH = math.floor(self.lh * 1.5)
+    if view.locked then
+      self:_print(clip(view.locked, right - cx), cx, cy, C.warn)
+      cy = cy + self.lh + cp
+    end
+    items = view.rules or {}
+    local pillW = self:w("OFF") + cp * 4
+    drawRow = function(it, ry, i)
+      local sel = i == view.sel
+      if sel then
+        g.setColor(C.sl[1], C.sl[2], C.sl[3], 0.2)
+        g.rectangle("fill", x + pad / 2, ry, width - pad, rowH)
+        self:_print(">", cx, ry + (rowH - self.lh) / 2, C.sl)
+      end
+      local dim = it.locked
+      self:_print(it.label, cx + self:w("> "), ry + (rowH - self.lh) / 2, dim and C.dim or C.text)
+      if it.note then
+        self:_print(clip(it.note, right - pillW - pad * 2 - cx - self:w("> " .. it.label .. "  ")),
+          cx + self:w("> " .. it.label .. "  "), ry + (rowH - self.lh) / 2, C.dim)
+      end
+      local col = it.on and C.good or C.dim
+      local px = right - pillW
+      g.setColor(col[1], col[2], col[3], dim and 0.1 or 0.25)
+      g.rectangle("fill", px, ry + (rowH - self.lh) / 2, pillW, self.lh, cp, cp)
+      local word = it.on and "ON" or "OFF"
+      self:_print(word, px + (pillW - self:w(word)) / 2, ry + (rowH - self.lh) / 2, col)
+    end
+    foot = "UP/DOWN pick   A toggles   LEFT/RIGHT tabs   F7 closes"
+  end
+
+  local fit = math.max(1, math.floor((bottom - cy) / rowH))
+  local maxScroll = math.max(0, #items - fit)
+  if tab == "RULES" then
+    -- keep the cursor on screen
+    local sel = view.sel or 1
+    if sel - self.scroll > fit then self.scroll = sel - fit end
+    if sel <= self.scroll then self.scroll = sel - 1 end
+  end
+  self.scroll = math.max(0, math.min(self.scroll, maxScroll))
   for i = 1, fit do
-    local it = items[i + self.scroll]
+    local idx = i + self.scroll
+    local it = items[idx]
     if not it then break end
     local ry = cy + (i - 1) * rowH
-    local ty = ry + (rowH - self.lh) / 2
-    if i % 2 == 0 then
+    if i % 2 == 0 and tab ~= "RULES" then
       g.setColor(C.row)
       g.rectangle("fill", x + pad / 2, ry, width - pad, rowH)
     end
-    if it.heading then
-      self:_print(it.heading, colA, ty, C.sl)
-    elseif it.extra then
-      local e = it.extra
-      monCell({ name = e.name, s = e.s, state = "caught", dead = e.dead }, colM, ry, colW)
-      local why = e.why == "over" and "not allowed" or e.why
-      self:_print(why, colT, ty, e.why == "over" and C.bad or C.dim)
-    else
-      self:_print(clip(it.area, areaW), colA, ty, C.text)
-      monCell(it.mine, colM, ry, colW)
-      monCell(it.theirs, colT, ry, colW)
-      local p = PILL[it.status] or PILL.waiting
-      local col = p[2]
-      g.setColor(col[1], col[2], col[3], 0.2)
-      g.rectangle("fill", colP, ty, pillW, self.lh, cp, cp)
-      self:_print(p[1], colP + (pillW - self:w(p[1])) / 2, ty, col)
-    end
+    drawRow(it, ry, idx)
   end
 
-  local foot = "F7 closes"
-  if maxScroll > 0 then
-    foot = ("UP/DOWN scroll (%d-%d of %d)   F7 closes"):format(self.scroll + 1,
-      math.min(#items, self.scroll + fit), #items)
+  if not foot then
+    foot = "LEFT/RIGHT tabs   F7 closes"
+    if maxScroll > 0 then
+      foot = ("UP/DOWN scroll (%d-%d of %d)   "):format(self.scroll + 1, math.min(#items, self.scroll + fit), #items) .. foot
+    end
   end
   self:_print(foot, cx, y + height - pad - self.lh, C.dim)
   return maxScroll

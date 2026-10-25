@@ -247,6 +247,28 @@ return function(mod)
   local SL_OPTIONS = { dupes = "sl_dupes", shiny = "sl_shiny", gift = "sl_gift",
                        static = "sl_static", enforce = "sl_enforce", hard = "sl_hard",
                        caps = "sl_caps" }
+  -- Soul Link settings picked in game (the panel's RULES tab), kept in this
+  -- player's storage: they beat the launcher's, which a sealed cart never
+  -- passes on (it hands its mods only the cart's own options).
+  local slStored = nil
+  local function slSettings()
+    if slStored == nil and game then
+      local ok, v = pcall(mod.storage.read, mod.storage, game, "sl_settings")
+      slStored = ok and type(v) == "table" and v or {}
+    end
+    return slStored or {}
+  end
+  local function slOpt(key)
+    local v = slSettings()[key]
+    if v ~= nil then return v == true end
+    return mod.options:get(key) == true
+  end
+  local function setSlOpt(key, on)
+    local t = slSettings()
+    t[key] = on == true
+    slStored = t
+    if game then pcall(mod.storage.write, mod.storage, game, "sl_settings", t) end
+  end
   local tracker = Tracker.new({
     SL = SoulLink, now = clock, toast = toast, session = gameSession,
     read = function(key) return mod.storage:read(game, key) end,
@@ -263,9 +285,28 @@ return function(mod)
     end,
     isShiny = function(mon) local P = engine("pokemon") return P and P.isShiny(mon) or false end,
     isEgg = function(mon) local P = engine("pokemon") return P and P.isEgg(mon) or false end,
+    -- what a battle's foe is, for the FALLEN list: "YOUNGSTER JOEY",
+    -- "wild ZUBAT"
+    faintCause = function(st)
+      if type(st) ~= "table" then return nil end
+      if st.wild then
+        local foe = st.enemy and st.enemy.mon
+        local P = engine("pokemon")
+        local ok, n = pcall(function() return P.name(tonumber(foe.species)) end)
+        return ok and n and ("wild " .. n) or "a wild POKeMON"
+      end
+      local id = tonumber(st.trainerId)
+      if not id then return st.link and "a link battle" or nil end
+      local ok, info = pcall(function() return require("src.core.game3.scripting.trainers").info(id) end)
+      if ok and info then
+        local cls = info.className and info.className ~= "" and (info.className .. " ") or ""
+        return (cls .. tostring(info.name or "")):gsub("%s+$", "")
+      end
+      return st.trainerName
+    end,
     options = function()
-      local o = { on = mod.options:get("soullink") == true }
-      for k, key in pairs(SL_OPTIONS) do o[k] = mod.options:get(key) == true end
+      local o = { on = slOpt("soullink") }
+      for k, key in pairs(SL_OPTIONS) do o[k] = slOpt(key) end
       return o
     end,
     newId = function()
@@ -315,7 +356,7 @@ return function(mod)
   local aceOf = {}
 
   local function capsOn()
-    return tracker.run ~= nil and mod.options:get("soullink") == true and tracker:rules().caps == true
+    return tracker.run ~= nil and slOpt("soullink") and tracker:rules().caps == true
   end
 
   -- On a cart the built-in story lists don't apply: a cart renumbers its
@@ -324,10 +365,15 @@ return function(mod)
   -- the first fight forever.  A cart's mod may supply the cap instead:
   --   mod.exports.coopLevelCap(session) -> { cap = level, label = text }
   -- (cap = nil once there are no more caps).  Without one, caps are off.
+  -- A cart that keeps the vanilla story and trainers says so instead
+  -- (mod.exports.coopVanillaStory = true), and the built-in list applies.
   local function cartCap()
     local okS, SaveData = pcall(require, "src.core.SaveData")
     local cart = okS and SaveData.getCart and SaveData.getCart() or nil
     if not cart then return false end
+    for id, ex in pairs(game and game.mods and game.mods.exports or {}) do
+      if id ~= "g3_coop" and type(ex) == "table" and ex.coopVanillaStory == true then return false end
+    end
     for id, ex in pairs(game and game.mods and game.mods.exports or {}) do
       if id ~= "g3_coop" and type(ex) == "table" and type(ex.coopLevelCap) == "function" then
         local ok, r = pcall(ex.coopLevelCap, gameSession())
@@ -375,11 +421,10 @@ return function(mod)
       end)
   end
 
+  -- the next big fight, worked out whether or not caps are on (the status
+  -- card and the Soul Link panel show it); nextToldFor: the last one toasted
+  local storyState, nextToldFor = nil, nil
   local function stepCaps()
-    if not capsOn() then
-      capState, capToldFor = nil, false
-      return
-    end
     local now = clock()
     if now < capAt then return end
     capAt = now + CAP_SECONDS
@@ -388,6 +433,17 @@ return function(mod)
       mod.log:warn("level caps: %s", tostring(st))
       return
     end
+    storyState = type(st) == "table" and st or nil
+    if not capsOn() then
+      capState, capToldFor = nil, false
+      local label = storyState and storyState.label
+      if label and nextToldFor and label ~= nextToldFor then
+        toast(("Next big fight: %s."):format(label), 6)
+      end
+      if label then nextToldFor = label end
+      return
+    end
+    nextToldFor = storyState and storyState.label or nextToldFor
     if st == "no_list" then
       capState = nil
       if capToldFor ~= "no_list" then
@@ -932,6 +988,8 @@ return function(mod)
   local autoPending = false
   -- shared trainer credit and team prizes, defined with the battle events below
   local applyCredits, settlePrize
+  -- mirrored story scenes, defined with the shared wild encounters below
+  local applyScenes
 
   local hinted = false
   local progConnected, sceneBusy = nil, false
@@ -1015,6 +1073,8 @@ return function(mod)
     end
     local okC, errC = pcall(applyCredits)
     if not okC then mod.log:warn("trainer credit: %s", tostring(errC)) end
+    local okS, errS = pcall(applyScenes, g)
+    if not okS then mod.log:warn("story scene: %s", tostring(errS)) end
     if progConnected ~= session then
       progConnected = session
       local okP, errP = pcall(progress.connected, progress)
@@ -1201,6 +1261,81 @@ return function(mod)
     if hud then hud.scroll = 0 end
   end
 
+  -- The panel's tabs (Hud.TABS) and its RULES tab: this player's Soul Link
+  -- settings, saved at once (slSettings).  Once linked, the host's rules
+  -- apply to both, so a guest's rule rows are shown but locked.
+  local slui = { tab = 1, sel = 1 }
+  slui.RULE_ROWS = {
+    { "soullink", "SOUL LINK", nil, "track this save's run" },
+    { "sl_dupes", "DUPES CLAUSE", "dupes" }, { "sl_shiny", "SHINY CLAUSE", "shiny" },
+    { "sl_gift", "GIFTS COUNT", "gift" }, { "sl_static", "STATICS COUNT", "static" },
+    { "sl_enforce", "ENFORCE CATCH LIMITS", "enforce", "balls refused" },
+    { "sl_hard", "HARD RULES", "hard", "the dead stay dead" },
+    { "sl_caps", "LEVEL CAPS", "caps", "next big fight's ace" },
+    { "show_next", "SHOW NEXT FIGHT", nil, "on the field" },
+  }
+  function slui.showNext()
+    local v = slSettings().show_next
+    if v == nil then return true end
+    return v == true
+  end
+  function slui.rulesLocked()
+    local run = tracker.run
+    return slOpt("soullink") and run and run.partner and run.ruler and run.ruler ~= tracker.tid or false
+  end
+  function slui.rulesRows()
+    local locked = slui.rulesLocked()
+    local inForce = locked and tracker:rules() or {}
+    local out = {}
+    for _, r in ipairs(slui.RULE_ROWS) do
+      local lock = locked and r[3] ~= nil
+      local on
+      if r[1] == "show_next" then on = slui.showNext()
+      elseif lock then on = inForce[r[3]] == true
+      else on = slOpt(r[1]) end
+      out[#out + 1] = { key = r[1], label = r[2], on = on, locked = lock, note = r[4] }
+    end
+    return out
+  end
+  function slui.panelData()
+    if not (slOpt("soullink") and tracker.run) then return nil end
+    local ok, data = pcall(tracker.panel, tracker)
+    return ok and data or nil
+  end
+  function slui.panelTabName()
+    if not slui.panelData() then return "RULES" end
+    return Hud.TABS[slui.tab]
+  end
+  slui.PANEL_TAB = { left = -1, right = 1, dpleft = -1, dpright = 1 }
+  slui.PANEL_PICK = { z = true, ["return"] = true, kpenter = true, a = true }
+  -- key: a key or button name; scroll: its scroll step; close: closes
+  function slui.panelInput(key, scroll, close)
+    if slui.PANEL_TAB[key] then
+      slui.tab = (slui.tab - 1 + slui.PANEL_TAB[key]) % #Hud.TABS + 1
+      if hud then hud.scroll = 0 end
+      return
+    end
+    if slui.panelTabName() == "RULES" then
+      local rows = slui.rulesRows()
+      if scroll then
+        slui.sel = math.max(1, math.min(#rows, slui.sel + (scroll > 0 and 1 or -1)))
+        return
+      end
+      if slui.PANEL_PICK[key] then
+        local row = rows[slui.sel]
+        if not row then return end
+        if row.locked then
+          toast("Linked: the host's rules apply to both of you.", 4)
+        else
+          setSlOpt(row.key, not row.on)
+          capAt = -1
+        end
+        return
+      end
+    end
+    if scroll then scrollPanel(scroll) elseif close then openPanel(false) end
+  end
+
   -- A team battle paused because the partner dropped (dev.21 engine): the
   -- battle stands still under this choice until one is picked.  Nothing can
   -- bring the partner back into this battle (COOP.md), so there is no
@@ -1308,8 +1443,7 @@ return function(mod)
       return true
     end
     if slPanel and ev and ev.phase == "pressed" and ev.key ~= "f8" then
-      if PANEL_SCROLL[ev.key] then scrollPanel(PANEL_SCROLL[ev.key])
-      elseif PANEL_CLOSE[ev.key] then openPanel(false) end
+      slui.panelInput(ev.key, PANEL_SCROLL[ev.key], PANEL_CLOSE[ev.key])
       return true
     end
     if ev and ev.phase == "pressed" and ev.key == "f8" then
@@ -1341,8 +1475,7 @@ return function(mod)
       return true
     end
     if slPanel and ev and ev.phase == "pressed" then
-      if PAD_SCROLL[ev.button] then scrollPanel(PAD_SCROLL[ev.button])
-      elseif PAD_CLOSE[ev.button] then openPanel(false) end
+      slui.panelInput(ev.button, PAD_SCROLL[ev.button], PAD_CLOSE[ev.button])
       return true
     end
     return next(g, ev)
@@ -1456,6 +1589,12 @@ return function(mod)
   if Bridge and Bridge.start and not Bridge._g3coopStart then
     Bridge._g3coopStart = Bridge.start
     Bridge.start = function(m, g, foe, opts)
+      -- the campaign cart may add a tag partner (second trainer) first, so
+      -- the joint fight is planned with both trainers
+      if type(opts) == "table" and not opts.link and not opts.wild and opts.trainerId
+          and type(Bridge.campaignTrainerOpts) == "function" then
+        pcall(Bridge.campaignTrainerOpts, opts)
+      end
       if type(opts) == "table" and not opts.link and not opts.wild and opts.trainerId
           and Bridge._g3coopTrainer then
         local ok, took = pcall(Bridge._g3coopTrainer, m, g, foe, opts)
@@ -1488,6 +1627,85 @@ return function(mod)
     local ghost = s.ghost
     return ghost and ghost.known and ghost.visible and ghost.map == gs.map
   end
+
+  -- Story scenes both players watch together (the 2026-10-22 request: the
+  -- Wally catching tutorial). When one player starts a listed scene with the
+  -- partner on the same map and free, the partner's game runs the same
+  -- script from the starter's spot, so neither has to start it again. Each
+  -- game plays it against its own story; a game that has already seen it, is
+  -- elsewhere, or is busy simply doesn't join. Emerald only.
+  local SCENES = {
+    -- Norman before the first badge: Wally arrives and the tutorial follows
+    PetalburgCity_Gym_EventScript_Norman = { map = "EM_PETALBURG_CITY_GYM",
+      wants = function(var) return var("VAR_PETALBURG_GYM_STATE") < 2 end },
+  }
+  local DIRS = { down = 1, up = 2, left = 3, right = 4 }
+  local DIR_NAMES = { "down", "up", "left", "right" }
+  local mirroring = false
+  local function sceneVar(name)
+    local C = require("src.core.game3.constants").of("emerald")
+    local id = C.vars and C.vars.byName and C.vars.byName[name]
+    local Space, Flags = engine("scripting.space"), engine("scripting.flags")
+    if not (id and Space and Space.store and Flags) then return math.huge end
+    return tonumber(Flags.getVar(Space.store, nil, id)) or 0
+  end
+  -- script keys are ROM addresses ("g3:082049f1"); the bundle's labels
+  -- table names them
+  local scenesByKey
+  local function sceneFor(key)
+    if not scenesByKey then
+      local Space = engine("scripting.space")
+      local bundle = Space and Space.ensureBundle and Space.ensureBundle()
+      local labels = bundle and bundle.labels
+      if not labels then return nil end
+      scenesByKey = {}
+      for label, scene in pairs(SCENES) do
+        if labels[label] then scenesByKey[labels[label]] = scene end
+      end
+    end
+    return scenesByKey[key] or SCENES[key]
+  end
+  local function sceneWanted(key, map)
+    local scene = sceneFor(key)
+    if not scene or GameVersion.get() ~= "emerald" then return false end
+    if map and scene.map ~= map then return false end
+    local ok, yes = pcall(scene.wants, sceneVar)
+    return ok and yes == true
+  end
+  local Vm = engine("scripting.vm")
+  if Vm and Vm.startTalk and not Vm._g3coopStartTalk then
+    Vm._g3coopStartTalk = Vm.startTalk
+    Vm.startTalk = function(vm, key, localId, facing, ...)
+      local wanted = not mirroring and sceneWanted(key)
+      local started = Vm._g3coopStartTalk(vm, key, localId, facing, ...)
+      if wanted and started and partnerHere() then
+        local gs, Player = gameSession(), engine("player")
+        local f = tonumber(facing) or DIRS[Player and Player.facing] or 1
+        session:sendScene(key, gs.map, Player and Player.cellX or gs.x, Player and Player.cellY or gs.y, f, localId)
+      end
+      return started
+    end
+  end
+  applyScenes = function(g)
+    if not (session and session.state == "connected") then return end
+    local scenes = session:takeScenes()
+    if #scenes == 0 then return end
+    local gs = gameSession()
+    local Space, Battle, Player = engine("scripting.space"), engine("battle"), engine("player")
+    for _, msg in ipairs(scenes) do
+      local free = gs and g and g.phase == "field" and not activity and Space and Space.vm
+        and not Space.vm:isRunning() and not (Battle and Battle.isActive and Battle.isActive())
+      if free and gs.map == msg.map and sceneWanted(msg.key, msg.map) then
+        toast(("Joining %s for this scene..."):format(tostring(session.peer and session.peer.name or "your partner")), 4)
+        if Player and Player.reset then Player.reset(msg.x, msg.y, DIR_NAMES[msg.facing]) end
+        mirroring = true
+        local ok, err = pcall(Space.startScript, msg.key, msg.localId ~= 0 and msg.localId or nil, msg.facing)
+        mirroring = false
+        if not ok then mod.log:warn("story scene: %s", tostring(err)) end
+        return
+      end
+    end
+  end
   if Bridge then
     Bridge._g3coopShare = function(m, g, enc, opts)
       local gs = gameSession()
@@ -1515,9 +1733,12 @@ return function(mod)
     if Bridge then Bridge._g3coopHow = nil end
     -- a co-op link battle is never an encounter; a team battle's faints
     -- are real, and a shared wild double is each player's own encounter
+    -- a link battle without a team activity is a versus battle, even when
+    -- this game didn't open the activity: never encounters or faints
+    local st = ev and ev.battle
     if activity and activity.kind == "team" then
       ev = { kind = (teamState and teamState.wild) and "coopwild" or "coopteam", battle = ev and ev.battle }
-    elseif activity then
+    elseif activity or (type(st) == "table" and st.link and not st.coopTeam) then
       ev = { kind = "link" }
     end
     local ok, err = pcall(tracker.onBattleStarted, tracker, ev, how)
@@ -2146,7 +2367,21 @@ return function(mod)
     card.lines[2] = soulLinkLine()
     local cap = capNow()
     if cap then card.lines[#card.lines + 1] = { ("LEVEL CAP %d: %s"):format(cap, capState.label), C.warn } end
+    if not cap and slui.showNext() and storyState and storyState.cap then
+      card.lines[#card.lines + 1] = { ("NEXT: %s (Lv%d)"):format(storyState.label, storyState.cap), C.warn }
+    end
     return card
+  end
+
+  -- Playing alone: the next big fight in a small card on the field
+  -- (RULES > SHOW NEXT FIGHT turns it off).
+  function slui.nextCard()
+    if not (slui.showNext() and storyState and storyState.cap) then return nil end
+    if not (game and game.phase == "field") then return nil end
+    local cap = capNow()
+    return { dot = cap and "wait" or "off", title = "NEXT BIG FIGHT", lines = {
+      { tostring(storyState.label), Hud.COLORS.text },
+      { cap and ("Level cap %d"):format(cap) or ("Ace Lv%d"):format(storyState.cap), Hud.COLORS.warn } } }
   end
 
   mod.hooks:wrap("render.hud", function(next, g, viewport)
@@ -2172,14 +2407,18 @@ return function(mod)
       return
     end
     if slPanel then
-      local data = tracker.run and tracker:panel() or nil
-      if data and capNow() then data.cap = { level = capState.cap, label = capState.label } end
+      local data = slui.panelData()
+      local locked = slui.rulesLocked()
+      local view = { tab = slui.panelTabName(), rules = slui.rulesRows(), sel = slui.sel,
+        locked = locked and (tostring(tracker.run.partner.nm or "Your partner")
+          .. " hosts: their rules apply while you're linked.") or nil,
+        nextFight = storyState and storyState.cap and { label = storyState.label, ace = storyState.cap, cap = capNow() } or nil }
       local ok, max = pcall(hud.drawPanel, hud, viewport, data,
         function(sp)
           local P = engine("pokemon")
           local okI, icon = pcall(P.icon, sp)
           return okI and icon or nil
-        end)
+        end, view)
       if ok then panelMax = max or 0 else mod.log:warn("soul link panel: %s", tostring(max)) end
       return
     end
@@ -2187,6 +2426,7 @@ return function(mod)
     -- the battle and trade screens use the whole screen; keep the toasts
     if mod.options:get("hud") and not (activity and activity.stage ~= "link") then
       local okC, card = pcall(cardInfo)
+      if okC and not card then okC, card = pcall(slui.nextCard) end
       if okC and card then
         local okD, below = pcall(hud.drawCard, hud, viewport, card)
         if okD then y = below else mod.log:warn("co-op card: %s", tostring(below)) end

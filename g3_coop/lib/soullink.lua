@@ -25,7 +25,9 @@
 --       x nil: the area's encounter; x = "shiny"|"static"|"gift": a free
 --       catch the rules allow; x = "over": caught against the rules
 --   { k = "miss",  a = area }        the area's encounter got away / was KO'd
---   { k = "faint", u = uid }         any run POKeMON fainted in this game
+--   { k = "faint", u = uid, a, by, lv }  any run POKeMON fainted in this game
+--       (a: the area it fell in, by: what beat it, lv: its level; all
+--       optional, older builds don't send them)
 --   { k = "nick",  u = uid, nm = nickname }
 
 local SL = {}
@@ -80,7 +82,9 @@ end
 
 -- One player's areas and catches.
 local function playerView(events)
-  local v = { areas = {}, extras = {}, names = {}, faints = {} }
+  -- faintList: the faint events in order (where and what beat it);
+  -- species[uid]: what each catch is
+  local v = { areas = {}, extras = {}, names = {}, faints = {}, faintList = {}, species = {}, misses = 0 }
   for _, ev in ipairs(events or {}) do
     if ev.k == "enc" then
       if not v.areas[ev.a] then
@@ -94,11 +98,13 @@ local function playerView(events)
         v.areas[ev.a] = ar
         ar.state, ar.s, ar.u = "caught", ev.s, ev.u
       end
+      v.species[ev.u] = ev.s
       if ev.nm and ev.nm ~= "" then v.names[ev.u] = ev.nm end
     elseif ev.k == "miss" then
       local ar = v.areas[ev.a]
-      if ar and ar.state == "pending" then ar.state = "failed" end
+      if ar and ar.state == "pending" then ar.state = "failed" v.misses = v.misses + 1 end
     elseif ev.k == "faint" then
+      if not v.faints[ev.u] then v.faintList[#v.faintList + 1] = ev end
       v.faints[ev.u] = true
     elseif ev.k == "nick" then
       v.names[ev.u] = ev.nm
