@@ -81,27 +81,44 @@ function SL.mergeLog(run, tid, from, events)
 end
 
 -- One player's areas and catches.
-local function playerView(events)
+-- Hoenn's starter is chosen on Route 101, but belongs to Littleroot's
+-- encounter. These are the shared Gen 3 internal starter/map-section IDs.
+function SL.hoennStarterArea(version, species, area)
+  if (version == "emerald" or version == "ruby" or version == "sapphire")
+    and area == 16 and (species == 277 or species == 280 or species == 283) then return 0 end
+  return area
+end
+
+local function playerView(events, giftArea)
   -- faintList: the faint events in order (where and what beat it);
   -- species[uid]: what each catch is
   local v = { areas = {}, extras = {}, names = {}, faints = {}, faintList = {}, species = {}, misses = 0 }
+  local giftAreas = {}
   for _, ev in ipairs(events or {}) do
+    local area = ev.a
     if ev.k == "enc" then
-      if not v.areas[ev.a] then
-        v.areas[ev.a] = { state = "pending", s = ev.s, h = ev.h, sh = ev.sh }
+      giftAreas[area] = ev.h == "gift" and giftArea and giftArea(ev.s, area) or nil
+      area = giftAreas[area] or area
+    elseif ev.k == "catch" or ev.k == "miss" then
+      area = giftAreas[area] or (ev.x == "gift" and giftArea and giftArea(ev.s, area)) or area
+      giftAreas[ev.a] = nil
+    end
+    if ev.k == "enc" then
+      if not v.areas[area] then
+        v.areas[area] = { state = "pending", s = ev.s, h = ev.h, sh = ev.sh }
       end
     elseif ev.k == "catch" then
       if ev.x then
-        v.extras[#v.extras + 1] = { a = ev.a, s = ev.s, u = ev.u, why = ev.x }
+        v.extras[#v.extras + 1] = { a = area, s = ev.s, u = ev.u, why = ev.x }
       else
-        local ar = v.areas[ev.a] or {}
-        v.areas[ev.a] = ar
+        local ar = v.areas[area] or {}
+        v.areas[area] = ar
         ar.state, ar.s, ar.u = "caught", ev.s, ev.u
       end
       v.species[ev.u] = ev.s
       if ev.nm and ev.nm ~= "" then v.names[ev.u] = ev.nm end
     elseif ev.k == "miss" then
-      local ar = v.areas[ev.a]
+      local ar = v.areas[area]
       if ar and ar.state == "pending" then ar.state = "failed" v.misses = v.misses + 1 end
     elseif ev.k == "faint" then
       if not v.faints[ev.u] then v.faintList[#v.faintList + 1] = ev end
@@ -122,11 +139,13 @@ end
 --   lines[base]: evolution lines caught by either player
 --   banned[uid]: may not battle under the hard rules: dead, or caught
 --     against the rules
-function SL.derive(run, baseOf)
+function SL.derive(run, baseOf, giftArea)
   local me = run.me.tid
   local them = run.partner and run.partner.tid
-  local mine = playerView(run.logs[me])
-  local theirs = playerView(them and run.logs[them] or nil)
+  -- Normalize the view of old local/partner logs without rewriting their
+  -- append-only wire history, identities, or faint records.
+  local mine = playerView(run.logs[me], giftArea)
+  local theirs = playerView(them and run.logs[them] or nil, giftArea)
   local fainted = {}
   for u in pairs(mine.faints) do fainted[u] = true end
   for u in pairs(theirs.faints) do fainted[u] = true end

@@ -122,7 +122,7 @@ end
 
 function Tracker:view()
   if not self.viewCache then
-    self.viewCache = self.SL.derive(self.run, self.d.baseOf)
+    self.viewCache = self.SL.derive(self.run, self.d.baseOf, self.d.giftArea)
     local tracked = {}
     for _, l in pairs(self.run.logs) do
       for _, ev in ipairs(l) do
@@ -434,6 +434,7 @@ function Tracker:_gift(mon)
   local SL, d = self.SL, self.d
   local enc = { a = d.areaOf(), s = tonumber(mon.species or mon.speciesId), h = "gift",
                 sh = d.isShiny(mon) or nil }
+  if d.giftArea then enc.a = d.giftArea(enc.s, enc.a, mon) end
   if not (enc.a and enc.s) then return end
   local u = SL.uid(mon)
   local verdict, why = SL.judge(self.run, self:rules(), self:view(), enc)

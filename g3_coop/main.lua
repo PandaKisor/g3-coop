@@ -277,6 +277,16 @@ return function(mod)
       local Pokemon = engine("pokemon")
       return Pokemon and Pokemon.currentMapSec and Pokemon.currentMapSec(gameSession())
     end,
+    giftArea = function(species, area, mon)
+      -- The party scan can see the starter after Birch has moved us back
+      -- to town. Use its met location for this one gift; other gifts keep
+      -- their usual area. Log normalization also handles old starter pairs.
+      if mon and tonumber(mon.metLevel) == 5 and tonumber(mon.metLocation) == 16 then
+        local town = SoulLink.hoennStarterArea(GameVersion.get(), baseOf(species), 16)
+        if town == 0 then return town end
+      end
+      return SoulLink.hoennStarterArea(GameVersion.get(), species, area)
+    end,
     areaName = areaName, baseOf = baseOf,
     speciesName = function(sp)
       local Pokemon = engine("pokemon")
