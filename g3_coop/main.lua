@@ -1821,6 +1821,7 @@ return function(mod)
     write = function(v) if game then pcall(mod.storage.write, mod.storage, game, "joint_wins", v) end end,
   })
   local creditSentTo = nil
+  local guideSentTo, guideMine, guidePartner = nil, nil, nil
 
   -- Team-battle prizes, paid once per trainer: the receipts live in the save
   -- itself (session.modData), so money and receipts are saved -- or lost to a
@@ -1921,6 +1922,16 @@ return function(mod)
           end
         end
       end
+    end
+    -- the partner's field-guide snapshot (campaign guide sync), kept between runs
+    local got = session:takeGuide()
+    if got then
+      guidePartner = got
+      pcall(function() mod.storage:write(game, "guide_partner", got) end)
+    end
+    if guideSentTo ~= session and session.state == "connected" and guideMine then
+      guideSentTo = session
+      session:sendGuide(guideMine)
     end
     -- on each new connection the whole list goes across once
     if creditSentTo ~= session and session.state == "connected" then
@@ -2521,5 +2532,18 @@ return function(mod)
   mod.exports.openEditor = function() openEditor() end
   mod.exports.setting = setting
   mod.exports.levelCap = function() stepCaps() return capNow(), capState end
+  -- field guide sync (campaign): share this player's party + box with the
+  -- partner, and read the partner's last snapshot (kept in mod storage)
+  mod.exports.shareGuide = function(d)
+    guideMine = d
+    if session and session.state == "connected" then guideSentTo = session session:sendGuide(d) end
+  end
+  mod.exports.partnerGuide = function()
+    if guidePartner == nil then
+      local ok, v = pcall(function() return mod.storage:read(game, "guide_partner") end)
+      guidePartner = ok and type(v) == "table" and v or false
+    end
+    return guidePartner or nil
+  end
   mod.exports.menu = function(g) coopMenu(g) end
 end

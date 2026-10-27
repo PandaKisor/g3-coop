@@ -960,4 +960,12 @@ T.eq(exports.compat(lh, rh({ link = { generation = 3, protocol = 2, engineVersio
   "and never across engine majors")
 run.release()
 
+-- field guide snapshots travel as data only (0.8.6)
+do
+  local snap = { name = "MAY", party = { { 280, 33, 0, 66, 3, 31, 31, 20, 0, 0, 0, 252, 252, 4, 0, 0, 0, 52, 98, 0, 0 } }, box = {} }
+  local msg = Protocol.validate(Protocol.guide(snap))
+  T.check(msg ~= nil and msg.type == Protocol.GUIDE, "a guide snapshot validates")
+  T.eq(msg and msg.d.party[1][1], 280, "the party survives the trip")
+  T.eq(Protocol.validate({ type = Protocol.GUIDE, d = "x" }), nil, "a non-table guide is refused")
+end
 T.finish("g3_coop")

@@ -30,6 +30,8 @@ Protocol.NPC = "coop_npc"
 Protocol.SL = "coop_sl"
 Protocol.TEAM = "coop_team"
 Protocol.CREDIT = "coop_credit"
+-- the field guide snapshot (party + box) a player shares with the partner
+Protocol.GUIDE = "coop_guide"
 Protocol.MAX_CREDIT_IDS = 512
 Protocol.PROG = "coop_prog"
 -- story scenes both players watch: one starts it, the other's game joins
@@ -214,6 +216,12 @@ end
 -- dropped counts for both; never filtered as a story trainer)
 function Protocol.credit(ids, fresh, joint)
   return { type = Protocol.CREDIT, ids = ids, fresh = fresh == true or nil, joint = joint == true or nil }
+end
+
+-- A player's party and box for the partner's field guide (campaign guide
+-- sync; data only, never applied to the game).
+function Protocol.guide(d)
+  return { type = Protocol.GUIDE, d = Protocol.packTree(d) }
 end
 
 -- Shared story progression (lib/progress.lua).  The descriptor is the
@@ -483,6 +491,12 @@ validators[Protocol.TEAM] = function(m)
   local d, why = Protocol.unpackTree(m.d)
   if type(d) ~= "table" then return nil, why or "bad_team" end
   return { type = m.type, c = c, d = d }
+end
+
+validators[Protocol.GUIDE] = function(m)
+  local d, why = Protocol.unpackTree(m.d)
+  if type(d) ~= "table" then return nil, why or "bad_guide" end
+  return { type = m.type, d = d }
 end
 
 validators[Protocol.CREDIT] = function(m)

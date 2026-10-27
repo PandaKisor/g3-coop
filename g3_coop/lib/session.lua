@@ -115,6 +115,9 @@ function Session:_receive(raw)
       if #self.scenes < 8 then self.scenes[#self.scenes + 1] = msg end
     elseif msg.type == P.CREDIT then
       if #self.credits < 64 then self.credits[#self.credits + 1] = msg end
+    elseif msg.type == P.GUIDE then
+      -- only the newest snapshot matters
+      self.guide = msg.d
     elseif msg.type == P.TEAM then
       -- one setup per channel; a second one for the same number is ignored
       if self.teams[msg.c] == nil then self.teams[msg.c] = msg.d end
@@ -225,6 +228,16 @@ function Session:cancelAsk(id)
 end
 
 -- shared trainer credit (lib/credit.lua)
+function Session:sendGuide(d)
+  if self.state == "connected" then self:_send(self.P.guide(d)) end
+end
+
+function Session:takeGuide()
+  local d = self.guide
+  self.guide = nil
+  return d
+end
+
 function Session:sendCredit(ids, fresh, joint)
   if self.state == "connected" then self:_send(self.P.credit(ids, fresh, joint)) end
 end
