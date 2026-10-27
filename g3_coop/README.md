@@ -162,7 +162,7 @@ can't start, the toast says why (for example "different engine release").
 
 ## Install
 
-Import **`g3_coop-0.8.4.zip`** (from https://github.com/PandaKisor/g3-coop/releases)
+Import **`g3_coop-0.8.5.zip`** (from https://github.com/PandaKisor/g3-coop/releases)
 from the launcher's **MODS** import screen, then enable it. On the Emerald
 Doubles Soul Link cart you don't need to: importing the cart downloads it. Both players need
 the mod, and the same version of it: 0.7.x refuses to connect to 0.6.x
@@ -181,6 +181,11 @@ In Hoenn, your starter counts as **Littleroot Town**, leaving **Route 101**
 available for a wild encounter. Older starter records are displayed and
 judged the same way, including your partner's; existing faint records stay
 in effect.
+
+Birch's rescue battle, Norman's borrowed Zigzagoon and Wally's catching
+demonstration are excluded from Soul Link encounters. Ordinary wild Zigzagoon
+still counts. Recognizable old Emerald tutorial records are ignored when
+deriving both players' run views, without rewriting the append-only logs.
 
 1. Both start the game and load a save. The host picks **START > CO-OP >
    HOST**; the card shows the address to give the partner.

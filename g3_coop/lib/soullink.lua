@@ -29,6 +29,7 @@
 --       (a: the area it fell in, by: what beat it, lv: its level; all
 --       optional, older builds don't send them)
 --   { k = "nick",  u = uid, nm = nickname }
+--   sc=true on new enc/catch events: live scripted-scene checks were applied.
 
 local SL = {}
 
@@ -89,12 +90,46 @@ function SL.hoennStarterArea(version, species, area)
   return area
 end
 
-local function playerView(events, giftArea)
+-- Old Emerald logs have no scene ID. These exact static/gift signatures
+-- belong to Birch's rescue and Norman/Wally's demonstration in vanilla story.
+-- Ordinary wild encounters (including these species) are never removed.
+function SL.emeraldStoryEncounter(version, ev)
+  if version ~= "emerald" or ev.sc then return false end
+  return (ev.h == "static" and ((ev.a == 16 and ev.s == 288) or (ev.a == 17 and ev.s == 392)))
+    or (ev.h == "gift" and ev.s == 288 and (ev.a == 1 or ev.a == 17))
+end
+
+local function withoutStoryEvents(events, ignoreEncounter)
+  if not ignoreEncounter then return events end
+  local out, pending, ignored = {}, {}, {}
+  for _, ev in ipairs(events or {}) do
+    local skip = false
+    if ev.k == "enc" then
+      pending[ev.a] = ignoreEncounter(ev) or nil
+      skip = pending[ev.a]
+    elseif ev.k == "catch" or ev.k == "miss" then
+      skip = pending[ev.a]
+      pending[ev.a] = nil
+      if ev.k == "catch" and ev.x == "gift" then
+        skip = skip or ignoreEncounter({h="gift",a=ev.a,s=ev.s,sc=ev.sc})
+      end
+      if skip and ev.u then ignored[ev.u] = true end
+    end
+    if not skip then out[#out + 1] = ev end
+  end
+  local filtered = {}
+  for _, ev in ipairs(out) do
+    if not (ev.u and ignored[ev.u]) then filtered[#filtered + 1] = ev end
+  end
+  return filtered
+end
+
+local function playerView(events, giftArea, ignoreEncounter)
   -- faintList: the faint events in order (where and what beat it);
   -- species[uid]: what each catch is
   local v = { areas = {}, extras = {}, names = {}, faints = {}, faintList = {}, species = {}, misses = 0 }
   local giftAreas = {}
-  for _, ev in ipairs(events or {}) do
+  for _, ev in ipairs(withoutStoryEvents(events, ignoreEncounter) or {}) do
     local area = ev.a
     if ev.k == "enc" then
       giftAreas[area] = ev.h == "gift" and giftArea and giftArea(ev.s, area) or nil
@@ -139,13 +174,13 @@ end
 --   lines[base]: evolution lines caught by either player
 --   banned[uid]: may not battle under the hard rules: dead, or caught
 --     against the rules
-function SL.derive(run, baseOf, giftArea)
+function SL.derive(run, baseOf, giftArea, ignoreEncounter)
   local me = run.me.tid
   local them = run.partner and run.partner.tid
   -- Normalize the view of old local/partner logs without rewriting their
   -- append-only wire history, identities, or faint records.
-  local mine = playerView(run.logs[me], giftArea)
-  local theirs = playerView(them and run.logs[them] or nil, giftArea)
+  local mine = playerView(run.logs[me], giftArea, ignoreEncounter)
+  local theirs = playerView(them and run.logs[them] or nil, giftArea, ignoreEncounter)
   local fainted = {}
   for u in pairs(mine.faints) do fainted[u] = true end
   for u in pairs(theirs.faints) do fainted[u] = true end

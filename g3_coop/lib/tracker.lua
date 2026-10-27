@@ -122,12 +122,10 @@ end
 
 function Tracker:view()
   if not self.viewCache then
-    self.viewCache = self.SL.derive(self.run, self.d.baseOf, self.d.giftArea)
+    self.viewCache = self.SL.derive(self.run, self.d.baseOf, self.d.giftArea, self.d.ignoreEncounter)
     local tracked = {}
-    for _, l in pairs(self.run.logs) do
-      for _, ev in ipairs(l) do
-        if ev.k == "catch" then tracked[ev.u] = true end
-      end
+    for _, v in ipairs({self.viewCache.mine, self.viewCache.theirs}) do
+      for u in pairs(v.species) do tracked[u] = true end
     end
     self.viewCache.tracked = tracked
   end
@@ -154,6 +152,9 @@ function Tracker:enforcing()
 end
 
 function Tracker:_append(ev)
+  -- New observations have passed the live scene exclusions; legacy cleanup
+  -- must not mistake a genuine gift from another compatible mod for a loan.
+  if ev.k == "enc" or ev.k == "catch" then ev.sc = true end
   local l = self.SL.log(self.run, self.tid)
   l[#l + 1] = ev
   local before = self.viewCache
@@ -198,6 +199,13 @@ end
 -- how: "wild" or "static" (main.lua knows which)
 function Tracker:onBattleStarted(ev, how)
   if not self:ensure() then return end
+  local kinds = ev and ev.battle and ev.battle.kinds or {}
+  if kinds.firstBattle == "birch" or kinds.tutorial == "wally" then
+    -- Birch's rescue uses our real starter; Wally's demonstration uses a
+    -- borrowed party. Neither spends an encounter or restricts tutorial balls.
+    self.battle = { other = true, tutorial = kinds.tutorial == "wally" }
+    return
+  end
   if ev and ev.kind == "coopwild" then return self:_coopWildStarted(ev) end
   if ev and ev.kind == "coopteam" then
     -- a team battle against trainers: real faints, our own mons only
@@ -327,7 +335,7 @@ function Tracker:onBattleEnded(_)
   local b = self.battle
   self.battle = nil
   if not self:ensure() then return end
-  if b and b.link then return end
+  if b and (b.link or b.tutorial) then return end
   if b and b.verdict == "counts" and not b.caught then
     self:_append({ k = "miss", a = b.enc.a })
     self.d.toast(("Soul Link: your %s encounter got away."):format(self.d.areaName(b.enc.a)), 5)
@@ -350,7 +358,7 @@ end
 function Tracker:onFainted(ev)
   if not self:ensure() then return end
   local b = self.battle
-  if b and b.link then return end
+  if b and (b.link or b.tutorial) then return end
   -- versus battles are played with copies (and restored after)
   local live = ev and ev.battle
   if type(live) == "table" and live.link and not live.coopTeam and not (b and b.team) then return end
@@ -380,6 +388,7 @@ end
 
 -- May not battle (hard rules on): dead, or caught against the rules.
 function Tracker:isBanned(mon)
+  if mon and mon._g3coopBorrowed then return false end
   if not self:hard() then return false end
   local u = self.SL.uid(mon)
   return u ~= nil and self:view().banned[u] == true
@@ -393,6 +402,7 @@ function Tracker:_scanFaints(s)
   local SL, d = self.SL, self.d
   local hits = {}
   eachMon(s, false, function(mon)
+    if mon._g3coopBorrowed then return end
     local u = SL.uid(mon)
     if u and v.tracked[u] and not v.dead[u] and not d.isEgg(mon) and (tonumber(mon.hp) or 1) <= 0 then
       hits[#hits + 1] = { u = u, mon = mon }
@@ -410,6 +420,7 @@ function Tracker:_scanParty(s, withBoxes)
   local myId = tonumber(s.trainerId or s.id or s.playerId)
   local gifts = {}
   eachMon(s, withBoxes, function(mon, where)
+    if mon._g3coopBorrowed then return end
     local u = SL.uid(mon)
     if not u then return end
     if not self.run.known[u] and not v.tracked[u] then
@@ -431,6 +442,7 @@ function Tracker:_scanParty(s, withBoxes)
 end
 
 function Tracker:_gift(mon)
+  if mon._g3coopBorrowed then return end
   local SL, d = self.SL, self.d
   local enc = { a = d.areaOf(), s = tonumber(mon.species or mon.speciesId), h = "gift",
                 sh = d.isShiny(mon) or nil }

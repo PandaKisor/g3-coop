@@ -416,6 +416,7 @@ local function slEvent(e)
     if not out.a then return nil end
   end
   if e.k == "enc" or e.k == "catch" then
+    out.sc = e.sc == true or nil
     out.s = int(e.s, 1, 2047)
     if not out.s then return nil end
   end

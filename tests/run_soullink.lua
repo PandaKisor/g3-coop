@@ -99,6 +99,16 @@ local long = {}
 for i = 1, Protocol.MAX_SL_EVENTS + 1 do long[i] = { k = "miss", a = 1 } end
 T.eq(bad({ ev = long }), nil, "slices are capped")
 T.eq(bad({ nm = "<script>" }).nm, "?script?", "names are filtered")
+local checked = bad({ ev = {
+  { k = "enc", a = 1, s = 288, h = "gift", sc = true },
+  { k = "catch", a = 1, s = 288, u = "1:1", sc = true },
+} })
+T.check(checked and checked.ev[1].sc and checked.ev[2].sc,
+  "live story checks survive encounter/catch wire validation")
+T.eq(bad({ev={{k="enc",a=1,s=288,h="gift",sc="yes"}}}).ev[1].sc, nil,
+  "story check marker only accepts a boolean")
+T.check(not SL.emeraldStoryEncounter("emerald", checked.ev[1]),
+  "a new genuine gift cannot be mistaken for an old tutorial loan on the peer")
 
 -- ------- the tracker, with a fake game
 

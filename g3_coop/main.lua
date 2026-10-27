@@ -288,6 +288,7 @@ return function(mod)
       return SoulLink.hoennStarterArea(GameVersion.get(), species, area)
     end,
     areaName = areaName, baseOf = baseOf,
+    ignoreEncounter = function(ev) return SoulLink.emeraldStoryEncounter(GameVersion.get(), ev) end,
     speciesName = function(sp)
       local Pokemon = engine("pokemon")
       local ok, n = pcall(Pokemon.name, tonumber(sp))
@@ -339,6 +340,24 @@ return function(mod)
     },
   })
   local slPanel = false
+  -- Norman lends this mon for Wally's scene. It temporarily has our OT and
+  -- occupies our party, but is not a gift or a member of the Soul Link run.
+  for _, spec in ipairs({
+    { "scripting.natives_frontier_story", "wallyZigzagoon" },
+    { "scripting.natives_field_rse", "loadWallyZigzagoon" },
+  }) do
+    local module = engine(spec[1])
+    local key = spec[2]
+    if module and module[key] and not module._g3coopWally then
+      local original = module[key]
+      module._g3coopWally = original
+      module[key] = function(...)
+        local mon = original(...)
+        if mon then mon._g3coopBorrowed = true end
+        return mon
+      end
+    end
+  end
   -- the overlay (lib/hud.lua), made on the first frame; panelMax: how far
   -- the Soul Link panel can scroll
   local hud, panelMax = nil, 0
