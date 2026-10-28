@@ -13,7 +13,7 @@
 -- What differs from the Tower is the parties.  A link battle's parties
 -- travel in the vanilla Gen 3 format (Protocol.packMon3), which refuses
 -- anything past move 354 / species 411 / item 374 and drops stored natures
--- and third abilities.  A cart that adds moves (the Inclement port's
+-- and third abilities.  A cart that adds moves (the expanded port's
 -- Disarming Voice is 574) can't link that way, so here every party travels
 -- whole over the co-op session (coop_team) and is handed to LB.beginMulti in
 -- place of the usual unpacking.  Both games run the same cart and mods (the
@@ -140,7 +140,7 @@ function TeamBattle.completeFoeMon(E, m)
 end
 
 -- One foe trainer, built by the game's own trainer code (a cart may replace
--- Trainers.foeFromId; the Inclement port does, with its own teams, spreads
+-- Trainers.foeFromId; the expanded port does, with its own teams, spreads
 -- and levels).  nil plus a reason when the id has no party.
 function TeamBattle.foe(E, trainerId)
   local tid = tonumber(trainerId)
@@ -208,8 +208,8 @@ function TeamBattle.wildMon(E, enc)
               item = tonumber(enc.item) or 0, personality = enc.personality, ivs = enc.ivs,
               moves = enc.moves }
   m = TeamBattle.completeFoeMon(E, m)
-  -- a cart with its own ability slots (the Inclement port) fills them here
-  local refresh = E.Pokemon and E.Pokemon._inclementAbilities and E.Pokemon._inclementAbilities.refresh
+  -- a cart with its own ability slots (the expanded port) fills them here
+  local refresh = E.Pokemon and E.Pokemon._expandedAbilities and E.Pokemon._expandedAbilities.refresh
   if refresh then pcall(refresh, m, m.abilityNum) end
   return m
 end
@@ -439,7 +439,7 @@ end
 
 -- A win's prize money (user, 2026-10-21): each player gets the full prize
 -- for both trainers, as if each had beaten them alone.  The amounts come
--- from the game's own prize rule (a cart's may differ; the Inclement port's
+-- from the game's own prize rule (a cart's may differ; the expanded port's
 -- uses the highest party level).  Returns the amount added.
 function TeamBattle.prize(E, session, foes, multiplier)
   local Prize = E.Prize

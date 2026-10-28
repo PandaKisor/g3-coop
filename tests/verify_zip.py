@@ -35,7 +35,7 @@ entries_path = os.path.join(work, "entries.json")
 with open(entries_path, "w", encoding="latin-1") as fh:
     json.dump(entries, fh, ensure_ascii=False)
 
-engine = os.path.join(gen3, "inclement-engine")
+engine = os.path.join(gen3, "dev-engine")
 result = subprocess.run(
     ["luajit", os.path.join(here, "verify_zip.lua"), archive, entries_path, extracted],
     cwd=engine)

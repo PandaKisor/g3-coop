@@ -1,7 +1,7 @@
 -- Trading whole mons.  The engine's trade (src/core/game3/link/trade.lua)
 -- sends each mon in the vanilla Gen 3 format and reads it back with a
 -- strict unpack that refuses anything past move 354 / species 411 / item
--- 374: on a cart that adds moves (the Inclement port's Disarming Voice is
+-- 374: on a cart that adds moves (the expanded port's Disarming Voice is
 -- 574), one such mon in either party closes the trade screen for both.
 --
 -- During a co-op trade both games first send their whole parties over the

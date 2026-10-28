@@ -1,5 +1,5 @@
 -- Headless suite for g3_coop.  Run from an engine checkout so src.* resolves:
---   cd Gen3Mod/inclement-engine && luajit ../coop/tests/run.lua
+--   cd Gen3Mod/dev-engine && luajit ../coop/tests/run.lua
 package.path = "./?.lua;./?/init.lua;" .. package.path
 
 local coop = (arg and arg[0] or ""):match("^(.*)/tests/[^/]*$") or "."

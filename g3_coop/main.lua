@@ -140,7 +140,7 @@ return function(mod)
   end
 
   -- every loaded mod and its version: map identity depends on content mods
-  -- (the Inclement port re-indexes and adds maps), not only on what the link
+  -- (the expanded port re-indexes and adds maps), not only on what the link
   -- fingerprint covers
   local function modsKey(g)
     local parts = {}
@@ -389,7 +389,7 @@ return function(mod)
   end
 
   -- On a cart the built-in story lists don't apply: a cart renumbers its
-  -- trainers (the Inclement port's are 60000+) and sets its own story, so
+  -- trainers (the expanded port's are 60000+) and sets its own story, so
   -- the vanilla rival's flag would never be set and the cap would stay at
   -- the first fight forever.  A cart's mod may supply the cap instead:
   --   mod.exports.coopLevelCap(session) -> { cap = level, label = text }

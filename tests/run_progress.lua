@@ -1,7 +1,7 @@
 -- Headless suite for lib/progress.lua (shared story progression) against a
 -- model of the port's coopProgress API 1 (COOP-PROGRESSION.md), over the
 -- real protocol validator and a JSON round trip.
---   cd Gen3Mod/inclement-engine && luajit ../coop/tests/run_progress.lua
+--   cd Gen3Mod/dev-engine && luajit ../coop/tests/run_progress.lua
 package.path = "./?.lua;./?/init.lua;" .. package.path
 
 local coop = (arg and arg[0] or ""):match("^(.*)/tests/[^/]*$") or "."

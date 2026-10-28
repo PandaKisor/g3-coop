@@ -3,8 +3,8 @@
 Two players, each on their own save, see each other walk the same Gen 3
 overworld, and can battle and trade right where they stand. One player
 hosts, the other joins by address. Works on vanilla
-Emerald/Ruby/Sapphire/FireRed/LeafGreen and on modded builds such as the
-Inclement Emerald port, as long as both players run the same game, the same
+Emerald/Ruby/Sapphire/FireRed/LeafGreen and on modded carts such as
+Emerald Doubles Soul Link, as long as both players run the same game, the same
 engine release and the same mods.
 
 ## What works
@@ -36,7 +36,7 @@ engine release and the same mods.
     is turned down as busy.
   - If either player disconnects mid-battle, the battle ends as a draw on
     both sides. Mid-trade, an unfinished trade is called off.
-- **Fighting together** (the Inclement cart, port 0.6.0-dev.23 or later):
+- **Fighting together** (on carts with co-op battles, such as Emerald Doubles Soul Link):
   - A wild POKeMON found in the grass with your partner on the same map
     asks them to join. On YES you both face two wild POKeMON together;
     otherwise you fight it alone.
@@ -197,8 +197,7 @@ deriving both players' run views, without rewriting the append-only logs.
 
 These choices are kept in each player's own save. The launcher's
 **Settings > Gen 3 Co-op** (ROLE, HOST ADDRESS, PORT, CONNECT ON LOAD) are
-used until a player sets them in the game. A sealed cart (the Inclement
-port) hands its mods only the cart's options, so on a cart the in-game
+used until a player sets them in the game. A sealed cart hands its mods only the cart's options, so on a cart the in-game
 screen is the only way to set them per player.
 
 ### Connecting over the internet
@@ -257,7 +256,7 @@ The suite covers message validation, step replay, the real virtual-object
 draw list, a full session over the engine's loopback transport (connect,
 movement, busy state, malformed input, partner leaving, refusals,
 timeouts), and loading through the real mod loader on a Gen 3 boot. It
-also passes when run from the Inclement development engine
+also passes when run from the expanded port's development engine
 (`porting/full_port/generated/engine`).
 
 ## How it fits in the engine (no engine changes)

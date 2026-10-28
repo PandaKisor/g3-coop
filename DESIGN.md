@@ -19,7 +19,7 @@ game's trainers, one player's script/cutscene affecting the other's world.
 Those need host-authoritative script state and are a separate, much larger
 project.
 
-## Independence from the Inclement port
+## Independence from the expanded port
 
 The mod (working ID `g3_coop`) depends only on:
 
@@ -28,8 +28,8 @@ The mod (working ID `g3_coop`) depends only on:
   `src.core.game3.link.*`), and
 - the `network` manifest permission (needed for `enet`).
 
-It never requires anything from `inclement_battle_test`. It must work on
-vanilla Emerald and FireRed/LeafGreen as well as the Inclement cart. The only
+It never requires anything from the port's development mod. It must work on
+vanilla Emerald and FireRed/LeafGreen as well as the expanded cart. The only
 port-specific concern is **identity**: the port renames/re-indexes 268 shared
 maps and adds 22, so:
 
@@ -38,8 +38,8 @@ maps and adds 22, so:
 - A session is only formed when both peers report the same game version **and**
   the same active cart `{id, version, hash}` (the same fields the arena
   profile uses: `src/online/ArenaData.lua`, `CartManifest.hash`). A vanilla
-  player and an Inclement player never share a world; their maps differ.
-- Different Inclement dev builds produce different cart hashes, so both
+  player and an expanded-port player never share a world; their maps differ.
+- Different port dev builds produce different cart hashes, so both
   players must run the same build. That's intended.
 
 ## What the engine already gives us
@@ -191,7 +191,7 @@ Protocol version 2, so a 0.2.x partner is refused by name.
 - Battle: `req` -> peer sees "X wants to battle" -> on accept both enter the
   Gen 3 link battle over the **same session** (the Union Room relay path is
   the reference). Cable rules: no lasting party/HP changes, matching vanilla
-  link play. Inclement rules apply automatically when both run the cart,
+  link play. The expanded rules apply automatically when both run the cart,
   provided the cart's battle RNG stays on `link_guard` (it currently does).
 - Trade: same flow into `link/trade.lua`. Trades are permanent and are written
   to each player's own save by the existing trade code.
@@ -211,7 +211,7 @@ let a message write to the local save outside the existing trade path.
 | ~~M0~~ done | Spike: two local instances, ENet `hello` + `pos` printed to log | 2–3 days |
 | ~~M1~~ done | Ghosts on the same map, smooth movement, warp snapping, timeout (B1 seam or draw-only fallback) | 1–1.5 weeks |
 | ~~M2~~ done (chat deferred) | Talk menu (A facing partner): WAVE / BATTLE / TRADE; toasts, neighbour-map drawing, seam crossing, ledge arcs | ~1 week |
-| ~~M3~~ done for vanilla (0.3.0) | Battle and trade over the session. Verified on vanilla Emerald with two real games: battle (both sides agree on the result), trade (swap saved on both sides), disconnect mid-battle (draw on both), request cancel. Inclement cart not yet tried | 1–2 weeks |
+| ~~M3~~ done for vanilla (0.3.0) | Battle and trade over the session. Verified on vanilla Emerald with two real games: battle (both sides agree on the result), trade (swap saved on both sides), disconnect mid-battle (draw on both), request cancel. expanded cart not yet tried | 1–2 weeks |
 | ~~M3.5~~ done (0.4.0) | End-to-end polish for a full playthrough: surf blob under the partner (bike sprite confirmed), automatic reconnect, host-driven wandering NPCs on a shared map (`lib/npcs.lua`, `coop_npc`). Real-game checks: NPC positions matched across both games over 30 s; reconnect in both directions | — |
 | ~~M3.6~~ done (0.5.0) | Soul Link as a shared co-op record (`lib/soullink.lua` rules, `lib/tracker.lua`, `coop_sl`): areas by MAPSEC (towns included), dupes/shiny/gift/static clauses, enforced catch limits through the bag's own refusal path, deaths and broken links propagated between games, per-playthrough `mod.storage`. Real-game checks: linked catches, refused ball not consumed, static detection, a faint killing the partner's mon on the other machine | — |
 | ~~M3.7~~ done (0.6.0) | Nicer UI and hard Soul Link rules: START > CO-OP menu (host/join/leave/Soul Link), partner card with ping and area, wrapped fading toasts, Soul Link panel with icons, status pills and scrolling (`lib/hud.lua`); hard rules (faints recorded on `battle.fainted`, revives refused, dead/not-allowed catches auto-boxed, run over). Real-game checks: start menu row and menu, panel, a whiteout boxing the dead mon, a withdrawn dead mon bouncing back, the partner's linked mon boxed on the other machine | — |
@@ -228,7 +228,7 @@ Total to a solid LAN v1 (M0–M3): about **4–6 weeks**. Online adds M4.
 2. Keep map **symbols** stable once assigned; renumbering is fine,
    renaming is not.
 3. Don't reuse the reserved runtime-object local-ID range chosen for B1.
-4. (2026-10-21) Pin `g3_coop` in the cart. `inclement_emerald.g1rcart` is
+4. (2026-10-21) Pin `g3_coop` in the cart. The port's development cart is
    `sealed`, so the loader disables every mod the cart does not list. Add it
    after the port in both `mods` and `load_order`:
    `{ id = "g3_coop", source = "local", version = "<installed co-op version>" }`.
@@ -237,7 +237,7 @@ Total to a solid LAN v1 (M0–M3): about **4–6 weeks**. Online adds M4.
    address) cannot come from the launcher on this cart. That part is co-op's
    to solve, not the cart's.
 
-## Results on the Inclement cart (2026-10-21, 0.7.2 vs 0.6.0-dev.19)
+## Results on the expanded cart (2026-10-21, 0.7.2 vs 0.6.0-dev.19)
 
 Two hidden copies of the dev.19 playtest app (Oldale), with a test-only cart
 copy that pins `g3_coop` and passes host/join through pin options:
@@ -273,12 +273,12 @@ implementation and validation; this update changes documentation only.
 
 ### Campaign foundation and challenge
 
-- Keep Inclement Emerald as the campaign's content foundation. It was chosen
+- Keep the donor hack as the campaign's content foundation. It was chosen
   for both its expanded roster/mechanics and its harder, redesigned trainer
   teams. Retain those benefits and adapt encounters and strategies for doubles.
 - Replace player-level-based enemy scaling with fixed trainer levels and fixed
   wild encounter level ranges. Enemy levels must not follow either player's
-  party. Inclement's trainer offsets need an authored replacement level curve;
+  party. The donor's trainer offsets need an authored replacement level curve;
   disabling scaling alone does not provide that curve.
 - Use player level caps tied to major fights in both full co-op and Soul Link.
   These caps are separate from enemy scaling. The exact progression of caps

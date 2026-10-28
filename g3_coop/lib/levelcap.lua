@@ -2,7 +2,7 @@
 -- ace (its highest-level POKeMON).  The big fights are each game's rivals,
 -- gym leaders, villain bosses and admins, and the League, in story order.
 -- Their levels come from the game's own trainer data, so a mod that
--- rebalances trainers (the Inclement port) moves the caps with it.
+-- rebalances trainers (the expanded port) moves the caps with it.
 --
 -- "Next" is the first fight after the last one beaten, so an optional
 -- fight skipped (a rival you walked past) stops counting once a later boss

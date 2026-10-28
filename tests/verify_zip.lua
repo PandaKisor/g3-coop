@@ -1,7 +1,7 @@
 -- Exercise the launcher's real ZIP installer on the release archive, with an
 -- in-memory filesystem (same approach as porting/battle_lab/verify_import.lua),
 -- then load the extracted archive through the real mod loader on a Gen 3 boot.
---   cd Gen3Mod/inclement-engine
+--   cd Gen3Mod/dev-engine
 --   luajit ../coop/tests/verify_zip.lua ../g3-coop-0.1.0.zip <entries.json> <extracted dir>
 -- entries.json maps each archive path to its bytes (written by verify_zip.py).
 package.path = "./?.lua;./?/init.lua;" .. package.path

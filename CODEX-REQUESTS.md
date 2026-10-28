@@ -9,7 +9,7 @@ engine-side pieces it cannot do from a mod.
 A team battle (both players against two of the game's trainers) runs today on
 the dev.19 cart with no engine changes. It uses the Battle Tower link multi:
 the host builds both foe parties with `Trainers.foeFromId` (the port's
-override, so Inclement teams, spreads and levels apply) and runs their AI as
+override, so the donor's teams, spreads and levels apply) and runs their AI as
 virtual seats; both games run in lockstep from one seed. Tested: 8 turns
 against Calvin + Rick (species 559/593/789), identical HP every turn, faint
 and replacement, a loss whiting out both players, 4 + 4 parties.
@@ -28,7 +28,7 @@ when they change:
 
 ## 1. Pin g3_coop in the cart (small)
 
-`inclement_emerald.g1rcart` is `sealed`, so every unlisted mod is switched
+The port's development cart is `sealed`, so every unlisted mod is switched
 off. Add after the port, in `mods` and `load_order`:
 `{ id = "g3_coop", source = "local", version = "0.8.0-dev.1" }`.
 
@@ -36,7 +36,7 @@ off. Add after the port, in `mods` and `load_order`:
 
 Link battles only stay in sync because every random roll comes from
 `st.rng`. `link_guard` raises "link battle rng fallback" on anything else.
-New Inclement abilities, items and move effects must take the battle's RNG
+New expanded abilities, items and move effects must take the battle's RNG
 too, never `math.random` or `Rng.Random` directly. The guard never fired in
 our tests.
 
