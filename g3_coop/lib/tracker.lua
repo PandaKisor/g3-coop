@@ -196,6 +196,46 @@ end
 
 -- ------------------------------------------------------------------ battle
 
+-- First encounters without duplicates (user, 2026-10-28): while a player's
+-- encounter on this area is still open, a wild double's Pokémon are of
+-- different evolution lines, and (dupes clause on) of none either player
+-- already has.  encs: rolled encounters ({ species = id, ... }); roll()
+-- rolls another (nil when it can't); fixed[i]: encs[i] stays (a fishing
+-- or scripted lead); both: the area counts as open while either player
+-- still has it (the shared co-op double).  Rerolls a few times and keeps
+-- the original roll when the table has nothing better.
+Tracker.PICK_TRIES = 24
+function Tracker:pickFirstEncounters(encs, roll, fixed, both)
+  if not self:ensure() or type(encs) ~= "table" or #encs < 2 then return encs end
+  local v, a = self:view(), self.d.areaOf()
+  if not a then return encs end
+  local open = not v.mine.areas[a] or (both and self.run.partner ~= nil and not v.theirs.areas[a])
+  if not open then return encs end
+  local dupes = self:rules().dupes
+  local base = function(s) return v.baseOf and v.baseOf(s) or s end
+  local taken = {}
+  local function ok(enc)
+    local s = type(enc) == "table" and tonumber(enc.species)
+    if not s then return false end
+    local b = base(s)
+    return not taken[b] and not (dupes and v.lines[b])
+  end
+  local out = {}
+  for i, enc in ipairs(encs) do
+    local pick = enc
+    if not (fixed and fixed[i]) and not ok(enc) then
+      for _ = 1, self.PICK_TRIES do
+        local r = roll()
+        if r and ok(r) then pick = r break end
+      end
+    end
+    out[i] = pick
+    local s = type(pick) == "table" and tonumber(pick.species)
+    if s then taken[base(s)] = true end
+  end
+  return out
+end
+
 -- how: "wild" or "static" (main.lua knows which)
 function Tracker:onBattleStarted(ev, how)
   if not self:ensure() then return end

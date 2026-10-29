@@ -617,7 +617,8 @@ return function(mod)
           if not pick then return nil, "error" end
           local seed = math.floor((os.time() * 7919 + clock() * 1000003)) % 4294967296
           if pick.wild then
-            setup, why = TeamBattle.hostWildSetup(E, gs, pick.map or gs.map or (E.Map and E.Map.current), seed)
+            setup, why = TeamBattle.hostWildSetup(E, gs, pick.map or gs.map or (E.Map and E.Map.current), seed,
+              function(encs, roll) return tracker:pickFirstEncounters(encs, roll, nil, true) end)
           else
             setup, why = TeamBattle.hostSetup(E, gs, pick.a, pick.b, seed)
           end
@@ -1614,7 +1615,18 @@ return function(mod)
         if ok and took then return true end
       end
       Bridge._g3coopHow = (type(opts) == "table" and opts.done) and "static" or "wild"
-      return Bridge._g3coopStartWild(m, g, enc, opts)
+      -- the cart's solo wild double asks wildPick (below); only a step's lead may be rerolled
+      Bridge._g3coopStepping = stepped
+      local ok, r1, r2 = pcall(Bridge._g3coopStartWild, m, g, enc, opts)
+      Bridge._g3coopStepping = nil
+      if not ok then error(r1, 0) end
+      return r1, r2
+    end
+    -- Soul Link: a first encounter's double holds no duplicate lines (lib/tracker.lua)
+    Bridge.wildPick = function(lead, partner, roll)
+      local fixed = { not Bridge._g3coopStepping, false }
+      local out = tracker:pickFirstEncounters({ lead, partner }, roll, fixed, false)
+      return out[1], out[2]
     end
   end
   -- trainer battles a script starts (_g3coopTrainer, with the joint-fight

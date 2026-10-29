@@ -216,15 +216,28 @@ end
 
 -- A wild double: two encounters rolled on the host's map, each a
 -- one-mon foe party.  nil plus a reason when the map has no wild table.
-function TeamBattle.hostWildSetup(E, session, mapId, seed)
+-- pick(encs, roll): optional, may swap rolls (Soul Link's first encounters,
+-- lib/tracker.lua pickFirstEncounters).
+function TeamBattle.hostWildSetup(E, session, mapId, seed, pick)
   local side = TeamBattle.mySide(E, session)
+  -- Sweet Scent's roll: always an encounter from the land table (the
+  -- step roll would also test the encounter rate)
+  local function roll()
+    local ok, enc = pcall(E.Encounters.rollSweetScent, mapId, "land")
+    return ok and type(enc) == "table" and enc or nil
+  end
+  local encs = {}
+  for i = 1, 2 do
+    encs[i] = roll()
+    if not encs[i] then return nil, "no_wild" end
+  end
+  if pick then
+    local ok, picked = pcall(pick, encs, roll)
+    if ok and type(picked) == "table" and #picked == 2 then encs = picked end
+  end
   local foes = {}
   for i = 1, 2 do
-    -- Sweet Scent's roll: always an encounter from the land table (the
-    -- step roll would also test the encounter rate)
-    local ok, enc = pcall(E.Encounters.rollSweetScent, mapId, "land")
-    if not ok or type(enc) ~= "table" then return nil, "no_wild" end
-    local m = TeamBattle.wildMon(E, enc)
+    local m = TeamBattle.wildMon(E, encs[i])
     if not m then return nil, "no_wild" end
     foes[i] = { name = "", wild = true, party = { m } }
   end

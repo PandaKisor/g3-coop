@@ -613,4 +613,31 @@ do
   T.check(drew("HARD RULES") and drew("is off"), "with Soul Link off the panel opens on RULES")
 end
 
+-- ------- first encounters without duplicates (user, 2026-10-28)
+do
+  local g = newGame(300, "DUP")
+  local P = newTracker(g)
+  P:ensure()
+  g.party[1] = mon(31, 300, 20)               -- the starter: line 20 is owned
+  clockT = clockT + 1; P:tick(true, false)
+  g.sec = 40
+  local function rolls(list) local i = 0 return function() i = i + 1 return list[i] and { species = list[i] } or nil end end
+  local sp = function(out) return out[1].species, out[2].species end
+  local a, b = sp(P:pickFirstEncounters({ { species = 20 }, { species = 10 } }, rolls({ 20, 40 })))
+  T.check(a == 40 and b == 10, "a first encounter's owned line is rerolled")
+  a, b = sp(P:pickFirstEncounters({ { species = 10 }, { species = 10 } }, rolls({ 10, 30 })))
+  T.check(a == 10 and b == 30, "the double's two POKeMON are different species")
+  a, b = sp(P:pickFirstEncounters({ { species = 1 }, { species = 3 } }, rolls({ 2, 10 })))
+  T.check(a == 1 and b == 10, "and different evolution lines")
+  a, b = sp(P:pickFirstEncounters({ { species = 20 }, { species = 20 } }, rolls({ 30 }), { true, false }))
+  T.check(a == 20 and b == 30, "a fishing or scripted lead stays; only the partner is rerolled")
+  a, b = sp(P:pickFirstEncounters({ { species = 10 }, { species = 10 } }, rolls({ 10, 10 })))
+  T.check(a == 10 and b == 10, "a table with nothing else keeps its roll")
+  wild(P, 10); P:onBattleEnded({})
+  a, b = sp(P:pickFirstEncounters({ { species = 20 }, { species = 20 } }, rolls({ 40, 40 })))
+  T.check(a == 20 and b == 20, "once the area's encounter is used, rolls are left alone")
+  T.check(P:pickFirstEncounters({ { species = 20 }, { species = 20 } }, rolls({ 40, 30 }), nil, true)[1].species == 20,
+    "the shared double without a partner: only this player's area counts")
+end
+
 T.finish("g3_coop soul link")
