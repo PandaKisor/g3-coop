@@ -94,6 +94,7 @@ return function(mod)
     end
     toasts[#toasts + 1] = t
     while #toasts > 3 do table.remove(toasts, 1) end
+    return t
   end
 
   -- Engine modules through require: inside the mod sandbox `package` is a
@@ -2455,11 +2456,36 @@ return function(mod)
       { cap and ("Level cap %d"):format(cap) or ("Ace Lv%d"):format(storyState.cap), Hud.COLORS.warn } } }
   end
 
+  -- A co-op battle pick can be taken back with B while the partner hasn't
+  -- chosen (the cart's link/battle.lua: LB.requestRetract). Say so while we
+  -- wait, and how a take-back went.
+  local waitToast
+  local function linkWaitHint(now)
+    local Battle, LB = engine("battle"), engine("link.battle")
+    if not (Battle and LB and LB.requestRetract) then return end
+    local name = (teamState and teamState.peerName) or "your partner"
+    local done = LB._retractDone
+    if done ~= nil then
+      LB._retractDone = nil
+      toast(done and "Pick again." or (name .. " already chose: your pick stays."), 2)
+    end
+    local st = Battle.isActive and Battle.isActive() and Battle.getState and Battle.getState()
+    if st and st.coopTeam and Battle._phase == "linkwait" and Battle._linkMulti then
+      if not (waitToast and waitToast.untilT >= now) then waitToast = toast("", 1) end
+      waitToast.text = LB._retract and ("Asking " .. name .. "...")
+        or ("Waiting for " .. name .. ". B: change your pick.")
+      waitToast.untilT = now + 0.25
+    elseif waitToast then
+      waitToast.untilT, waitToast = 0, nil
+    end
+  end
+
   mod.hooks:wrap("render.hud", function(next, g, viewport)
     next(g, viewport)
     if not (love and love.graphics) then return end
     hud = hud or Hud.new(love.graphics)
     local now = clock()
+    pcall(linkWaitHint, now)
     for i = #toasts, 1, -1 do
       if toasts[i].untilT < now then table.remove(toasts, i) end
     end
