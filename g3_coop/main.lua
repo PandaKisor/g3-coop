@@ -1045,6 +1045,18 @@ return function(mod)
     stepCaps()
     restoreText()
     if g.phase == "field" then
+      -- our locks with nothing left holding them: Field.unlock is dropped
+      -- while a warp or fly landing finishes, which is when a battle hands
+      -- back to the field (user, 2026-10-29: frozen after the first rival)
+      local Field = engine("field")
+      local locks = Field and Field._locks
+      if locks and Field.unlock then
+        if locks[WILD_LOCK] and not heldTrainer and not activity
+            and not (requests and requests.outgoing) then
+          Field.unlock(WILD_LOCK)
+        end
+        if locks[Activity.LOCK] and not activity then Field.unlock(Activity.LOCK) end
+      end
       local okP, errP = pcall(progress.tick, progress)
       if not okP then mod.log:warn("story events: %s", tostring(errP)) end
       -- a follower waiting at a scene's next fight whose leader is gone (or
