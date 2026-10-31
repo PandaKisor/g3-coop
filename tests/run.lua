@@ -968,4 +968,46 @@ do
   T.eq(msg and msg.d.party[1][1], 280, "the party survives the trip")
   T.eq(Protocol.validate({ type = Protocol.GUIDE, d = "x" }), nil, "a non-table guide is refused")
 end
+-- ------- the host's internet address
+do
+  local PublicIp = lib("publicip")
+  local parse = lib("connedit").parseIp
+  local asked, released = {}, 0
+  local answers = {}
+  local fetch = {
+    available = function() return true end,
+    get = function(_, url) asked[#asked + 1] = url return #asked end,
+    poll = function(_, job) return answers[job] or { status = "pending" } end,
+    release = function() released = released + 1 end,
+    cancel = function() end,
+  }
+  local ip = PublicIp.new(fetch, parse)
+  T.eq(ip:address("192.168.1.5:7777"), nil, "no internet address before asking")
+  ip:start() ip:start() ip:update()
+  T.eq(#asked, 1, "one question at a time")
+  T.eq(ip.state, "asking", "and it waits without blocking")
+  answers[1] = { status = "error", err = "timeout" }
+  ip:update()
+  T.eq(#asked, 2, "a service that fails passes to the next")
+  answers[2] = { status = "ok", body = "203.0.113.9\n" }
+  ip:update()
+  T.eq(ip:address("192.168.1.5:7777"), "203.0.113.9:7777", "the internet address keeps the host's port")
+  T.eq(released, 2, "each job is released")
+  ip:start()
+  T.eq(#asked, 2, "found once is enough for this hosting")
+  ip:reset()
+  T.eq(ip:address("192.168.1.5:7777"), nil, "a new hosting asks again")
+
+  asked, answers = {}, { { status = "ok", body = "<html>not an address</html>" }, { status = "ok", body = "2001:db8::1" } }
+  ip = PublicIp.new(fetch, parse)
+  ip:start() ip:update() ip:update()
+  T.eq(ip.state, "failed", "answers that aren't IPv4 are not shown")
+  ip:start()
+  T.eq(#asked, 2, "and a failed lookup isn't retried every tick")
+
+  ip = PublicIp.new({ available = function() return false end }, parse)
+  ip:start()
+  T.eq(ip.state, "failed", "no transport: the home address stays")
+end
+
 T.finish("g3_coop")

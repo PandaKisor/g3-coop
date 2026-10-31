@@ -212,7 +212,8 @@ There are two ways to do that:
 - **Port forward (recommended):** in the host's router settings, forward
   **UDP port 7777** (or whatever PORT you chose) to the host's computer.
   It's a one-time setting. The partner then joins using the host's
-  *public* IP address (search "what is my IP" on the host's machine).
+  *public* IP address, which the HOSTING card shows (looked up from
+  api.ipify.org, or icanhazip.com if that fails, only while hosting).
 - **A "virtual LAN" app** such as Tailscale or ZeroTier, if you can't
   change router settings. Both players install it, and it makes the two
   computers act as if they were on the same home network. The partner then

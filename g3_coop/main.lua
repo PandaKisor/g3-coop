@@ -31,6 +31,8 @@ return function(mod)
   local LevelCap = import("lib/levelcap.lua")
   local TeamBattle = import("lib/teambattle.lua")
   local ConnEdit = import("lib/connedit.lua")
+  local PublicIp = import("lib/publicip.lua")
+  local publicIp = PublicIp.new(mod.fetch, ConnEdit.parseIp)
   local TradeFull = import("lib/tradefull.lua")
   local Credit = import("lib/credit.lua")
   local Progress = import("lib/progress.lua")
@@ -507,6 +509,7 @@ return function(mod)
   end
 
   local function dropSession()
+    publicIp:reset()
     tracker:onDisconnected()
     slConnected = nil
     npcs:release()
@@ -1029,6 +1032,10 @@ return function(mod)
   local hinted = false
   local progConnected, sceneBusy = nil, false
   local function tick(g)
+    if session and session.state == "waiting" and session.role == "host" and not session.sameMachine then
+      publicIp:start()
+    end
+    publicIp:update()
     -- decided on reaching the field: this player's choice lives in the save
     if autoPending and g.phase == "field" then
       autoPending = false
@@ -2351,7 +2358,7 @@ return function(mod)
         return "CO-OP: port in use, joining this PC's host " .. tostring(s.net.target) .. "..."
       end
       if s.role == "join" then return "CO-OP: joining " .. tostring(s.net.target) .. "..." end
-      return "CO-OP: hosting on " .. tostring(s.net.address) .. " - waiting"
+      return "CO-OP: hosting on " .. tostring(publicIp:address(s.net.address) or s.net.address) .. " - waiting"
     elseif s.state == "handshake" then
       return "CO-OP: checking versions..."
     end
@@ -2426,9 +2433,23 @@ return function(mod)
         local note = s.sameMachine and "This PC's host" or "Joining"
         return { dot = "wait", title = "JOINING", lines = { note, { tostring(s.net.target), C.text } } }
       end
-      return { dot = "wait", title = "HOSTING", lines = {
-        s.sameMachine and "On this PC. Your partner joins:" or "Your partner joins:",
-        { tostring(s.net.address), C.text }, "START > CO-OP to stop" } }
+      if s.sameMachine then
+        return { dot = "wait", title = "HOSTING", lines = { "On this PC. Your partner joins:",
+          { tostring(s.net.address), C.text }, "START > CO-OP to stop" } }
+      end
+      local outside = publicIp:address(s.net.address)
+      local lines = {}
+      if outside then
+        lines = { "Your partner joins:", { outside, C.text } }
+      elseif publicIp.state == "asking" then
+        lines = { "Finding internet address..." }
+      else
+        lines = { "No internet address found" }
+      end
+      lines[#lines + 1] = "On your own network:"
+      lines[#lines + 1] = { tostring(s.net.address), C.text }
+      lines[#lines + 1] = "START > CO-OP to stop"
+      return { dot = "wait", title = "HOSTING", lines = lines }
     elseif s.state == "handshake" then
       return { dot = "wait", title = "CONNECTING", lines = { "Checking versions..." } }
     end

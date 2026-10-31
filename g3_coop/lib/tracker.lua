@@ -246,7 +246,7 @@ function Tracker:onBattleStarted(ev, how)
     self.battle = { other = true, tutorial = kinds.tutorial == "wally" }
     return
   end
-  if ev and ev.kind == "coopwild" then return self:_coopWildStarted(ev) end
+  if ev and ev.kind == "coopwild" then return self:_wildDoubleStarted(ev, "wild", true) end
   if ev and ev.kind == "coopteam" then
     -- a team battle against trainers: real faints, our own mons only
     self.battle = { other = true, team = true }
@@ -259,6 +259,7 @@ function Tracker:onBattleStarted(ev, how)
   end
   local d = self.d
   local st = ev.battle
+  if st and st.double and #(st.foeParty or {}) >= 2 then return self:_wildDoubleStarted(ev, how) end
   local mon = st and st.enemy and st.enemy.mon
   local enc = { a = d.areaOf(), s = tonumber(ev.speciesId), h = how or "wild",
                 sh = mon and d.isShiny(mon) or nil }
@@ -284,35 +285,35 @@ function Tracker:onBattleStarted(ev, how)
   end
 end
 
--- A wild double shared with the partner (lib/teambattle.lua).  Each player
--- has their own first encounter per area (the addendum): this game judges
--- only its own.  Either foe may be the one this player catches, so the
--- encounter counts if either foe would; the catch itself is judged again by
--- the species actually caught (onCaught).
-function Tracker:_coopWildStarted(ev)
+-- A wild double, alone or shared with the partner (lib/teambattle.lua).
+-- Each player has their own first encounter per area (the addendum): this
+-- game judges only its own.  Either foe may be the one this player catches,
+-- so the encounter counts if either foe would; the catch itself is judged
+-- again by the foe actually caught (onCaught).
+function Tracker:_wildDoubleStarted(ev, how, shared)
   local d = self.d
   local st = ev.battle
   local a = d.areaOf()
   local best, foes = nil, {}
   for _, mon in ipairs(st and st.foeParty or {}) do
-    local enc = { a = a, s = tonumber(mon.species or mon.speciesId), h = "wild",
+    local enc = { a = a, s = tonumber(mon.species or mon.speciesId), h = how or "wild",
                   sh = d.isShiny(mon) or nil }
     if enc.a and enc.s then
       local verdict, why = self.SL.judge(self.run, self:rules(), self:view(), enc)
-      foes[#foes + 1] = { enc = enc, verdict = verdict, why = why }
+      foes[#foes + 1] = { enc = enc, verdict = verdict, why = why, p = tonumber(mon.personality) }
       local rank = verdict == "counts" and 3 or verdict == "free" and 2 or 1
       if not best or rank > best.rank then best = { enc = enc, verdict = verdict, why = why, rank = rank } end
     end
   end
   if not best then
-    self.battle = { other = true, team = true }
+    self.battle = { other = true, team = shared }
     return
   end
   self.battle = { enc = best.enc, verdict = best.verdict, why = best.why, caught = false,
-                  team = true, coopWild = true, foes = foes }
+                  team = shared, foes = foes }
   local area = d.areaName(a)
   if best.verdict == "counts" then
-    self:_append({ k = "enc", a = a, s = best.enc.s, h = "wild", sh = best.enc.sh })
+    self:_append({ k = "enc", a = a, s = best.enc.s, h = best.enc.h, sh = best.enc.sh })
     d.toast(("Soul Link: this is your %s encounter. Catch either one."):format(area), 5)
   elseif best.verdict == "free" then
     d.toast("Soul Link: a shiny! Free to catch.", 5)
@@ -329,34 +330,32 @@ function Tracker:onCaught(ev)
   local mon = ev and ev.mon
   local u = self.SL.uid(mon)
   if not (b and b.enc and u) then return end
-  if b.coopWild then
-    -- judged by what was caught: the other foe may have been the dupe
-    local s = tonumber(mon.species or mon.speciesId)
-    for _, f in ipairs(b.foes or {}) do
-      if f.enc.s == s then
-        if b.verdict == "counts" and f.verdict ~= "counts" then
-          b.verdict, b.why = f.verdict, f.why
-          if f.verdict == "blocked" then b.verdict = "late" end
-        end
-        b.enc = { a = b.enc.a, s = s, h = "wild", sh = f.enc.sh }
-        break
-      end
+  local enc, verdict, why = b.enc, b.verdict, b.why
+  if b.foes then
+    -- judged by what was caught: the other foe may have been the dupe.  The
+    -- catch copy has a new OT, so the personality is what still names the foe.
+    local p, s = tonumber(mon.personality), tonumber(mon.species or mon.speciesId)
+    local foe
+    for _, f in ipairs(b.foes) do
+      if p and f.p == p then foe = f break end
+      if f.enc.s == s then foe = foe or f end
     end
+    if foe then enc, verdict, why = foe.enc, foe.verdict, foe.why end
   end
-  local second = b.caught
   b.caught = true
   self.run.known[u] = true
   local x = nil
-  if b.verdict == "free" then x = b.why elseif b.verdict ~= "counts" then x = "over" end
+  if verdict == "free" then x = why elseif verdict ~= "counts" then x = "over" end
   -- both foes of a wild double caught: only the first is the encounter
-  if second and x == nil then x = "over" end
+  if b.encDone and x == nil then x = "over" end
+  if x == nil then b.encDone = true end
   local nick = mon.nickname
-  self:_append({ k = "catch", a = b.enc.a, s = b.enc.s, u = u, x = x,
+  self:_append({ k = "catch", a = enc.a, s = enc.s, u = u, x = x,
                  nm = type(nick) == "string" and nick ~= "" and nick:sub(1, 12) or nil })
   if x == "over" then
     self.d.toast("Soul Link: caught against the rules. It's marked as not allowed.", 6)
   elseif not x then
-    self:_announceLink(b.enc.a)
+    self:_announceLink(enc.a)
   end
 end
 
@@ -376,7 +375,7 @@ function Tracker:onBattleEnded(_)
   self.battle = nil
   if not self:ensure() then return end
   if b and (b.link or b.tutorial) then return end
-  if b and b.verdict == "counts" and not b.caught then
+  if b and b.verdict == "counts" and not b.encDone then
     self:_append({ k = "miss", a = b.enc.a })
     self.d.toast(("Soul Link: your %s encounter got away."):format(self.d.areaName(b.enc.a)), 5)
   end

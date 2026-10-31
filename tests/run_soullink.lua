@@ -543,11 +543,53 @@ do
   log = SL.log(W.run, W.tid)
   T.eq(log[#log].x, "over", "catching the dupe of the two is against the rules")
   W:onBattleEnded({})
+  T.eq(events("miss"), 1, "and the foe that counted got away: the encounter is missed, not stuck in battle")
 
   gW.sec = 42
   coopWild(80, 81)
   W:onBattleEnded({})
-  T.eq(events("miss"), 1, "an eligible shared encounter that escapes is a miss")
+  T.eq(events("miss"), 2, "an eligible shared encounter that escapes is a miss")
+
+  -- a solo wild double: split encounters, each player in their own battle.
+  -- ev.speciesId is only the right-hand foe (slot 1)
+  local function soloWild(a, b, pa, pb)
+    W:onBattleStarted({ kind = "wild", speciesId = a, battle = { double = true, enemy = { mon = { species = a } },
+      foeParty = { { species = a, personality = pa }, { species = b, personality = pb } } } })
+  end
+  gW.sec = 43
+  soloWild(90, 91)
+  T.check(lastToast(ioW):find("Catch either one", 1, true), "a solo wild double offers either foe")
+  gW.party[4] = mon(504, 500, 91)
+  W:onCaught({ mon = gW.party[4] })
+  log = SL.log(W.run, W.tid)
+  T.eq(log[#log].s, 91, "a solo catch of the left foe is recorded as that foe, not the right one")
+  T.eq(log[#log].x, nil, "and is the area's encounter")
+  W:onBattleEnded({})
+  T.eq(W:view().mine.areas[43].s, 91, "the area shows the Pokemon really caught")
+  T.eq(events("miss"), 2, "and no miss")
+
+  gW.sec = 44
+  soloWild(92, 92, 7001, 7002)
+  gW.party[5] = mon(7002, 500, 92)
+  W:onCaught({ mon = gW.party[5] })
+  log = SL.log(W.run, W.tid)
+  T.eq(log[#log].x, nil, "two of one species: the catch still counts")
+  W:onBattleEnded({})
+
+  -- a free catch doesn't use up the foe that really counts
+  gW.sec = 45
+  W:onBattleStarted({ kind = "wild", speciesId = 93, battle = { double = true, enemy = { mon = { species = 93 } },
+    foeParty = { { species = 93, personality = 7101, isShiny = true }, { species = 94, personality = 7102 } } } })
+  gW.party[6] = mon(7101, 500, 93)
+  W:onCaught({ mon = gW.party[6] })
+  log = SL.log(W.run, W.tid)
+  T.eq(log[#log].x, "shiny", "the shiny of the two is a free catch")
+  gW.party[6] = mon(7102, 500, 94)
+  W:onCaught({ mon = gW.party[6] })
+  log = SL.log(W.run, W.tid)
+  T.eq(log[#log].x, nil, "and the other foe is still the area's encounter")
+  W:onBattleEnded({})
+  T.eq(events("miss"), 2, "no miss")
 
   W:onBattleStarted({ kind = "coopteam" })
   local before = #SL.log(W.run, W.tid)
