@@ -42,7 +42,8 @@ SL.KINDS = { enc = true, catch = true, miss = true, faint = true, nick = true }
 
 function SL.uid(mon)
   if type(mon) ~= "table" then return nil end
-  local p, o = tonumber(mon.personality), tonumber(mon.otId or mon.trainerId)
+  -- a Nature Mint rewrites the personality: linkPersonality is the original
+  local p, o = tonumber(mon.linkPersonality or mon.personality), tonumber(mon.otId or mon.trainerId)
   if not (p and o) then return nil end
   return ("%.0f:%.0f"):format(p % 4294967296, o % 4294967296)
 end

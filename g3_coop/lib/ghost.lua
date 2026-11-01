@@ -166,10 +166,6 @@ function Ghost:tick()
   end
 end
 
-function Ghost:shownOn(mapId)
-  return self.known and self.visible and mapId ~= nil and self.map == mapId
-end
-
 -- The cell the partner occupies (or is stepping onto) on the local screen,
 -- or nil when they are not drawn here.
 function Ghost:screenCell(offsetOf)
