@@ -15,7 +15,8 @@ local Protocol = {}
 -- 8: shared wild encounters (act "wild"), shared trainer credit (coop_credit)
 -- 9: trainer fights together (acts "trainer" and "joint", ask carries t)
 -- 10: shared story progression (coop_prog, lib/progress.lua)
--- 11: the partner's party for the TEAM tab (coop_party)
+-- 11: the partner's party for the TEAM tab (coop_party), numbered link
+--     messages and coop_resume, so a team battle survives a dropped connection
 Protocol.VERSION = 11
 
 Protocol.HELLO = "coop_hello"
@@ -30,6 +31,7 @@ Protocol.LINK = "coop_link"
 Protocol.NPC = "coop_npc"
 Protocol.SL = "coop_sl"
 Protocol.PARTY = "coop_party"
+Protocol.RESUME = "coop_resume"
 Protocol.TEAM = "coop_team"
 Protocol.CREDIT = "coop_credit"
 -- the field guide snapshot (party + box) a player shares with the partner
@@ -119,8 +121,14 @@ end
 
 -- one message of the engine's own link protocol (src/link/Game3Link.lua and
 -- the battle/trade modules on top of it), carried on channel c
-function Protocol.link(c, m)
-  return { type = Protocol.LINK, c = c, m = m }
+function Protocol.link(c, m, s, a)
+  return { type = Protocol.LINK, c = c, m = m, s = s, a = a }
+end
+
+-- after a dropped connection: channel c, what we have of it; none = true means
+-- we have no such channel any more (the partner's game restarted)
+function Protocol.resume(c, got, none)
+  return { type = Protocol.RESUME, c = c, got = got, none = none == true or nil }
 end
 
 -- the host's wandering NPCs on map m: { {id, x, y, d [, tx, ty, f]}, ... },
@@ -387,7 +395,13 @@ validators[Protocol.LINK] = function(m)
           and #inner.type > 0 and #inner.type <= 64) then
     return nil, "bad_link"
   end
-  return { type = m.type, c = c, m = inner }
+  return { type = m.type, c = c, m = inner, s = int(m.s, 1, 2 ^ 31), a = int(m.a, 0, 2 ^ 31) }
+end
+
+validators[Protocol.RESUME] = function(m)
+  local c = int(m.c, 1, Protocol.MAX_REQUEST)
+  if not c then return nil, "bad_resume" end
+  return { type = m.type, c = c, got = int(m.got, 0, 2 ^ 31) or 0, none = m.none == true }
 end
 
 validators[Protocol.NPC] = function(m)

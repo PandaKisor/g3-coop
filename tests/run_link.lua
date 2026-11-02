@@ -390,6 +390,61 @@ do
   check(not E.LT.loopbackCommit, "and the commit mode as it found it")
 end
 
+-- ------- a dropped connection: a team battle's channel survives
+
+do
+  local function pump(x, y) for _ = 1, 6 do x:tick(); y:tick() end end
+  local sa, sb = pair()
+  local ca, cb = sa:openChannel(9), sb:openChannel(9)
+  ca.resumable, cb.resumable = true, true
+  ca:send({ type = "t", n = 1 })
+  pump(sa, sb)
+  eq(#cb:poll(), 1, "the first message arrives")
+  -- this one is sent into the drop: the partner never sees it
+  sb:_fail("closed", "timeout")
+  ca:send({ type = "t", n = 2 })
+  sa:_fail("closed", "timeout")
+  check(ca.suspended and cb.suspended and not ca.closed and not cb.closed, "both ends suspend, not fail")
+  ca:send({ type = "t", n = 3 })
+  cb:send({ type = "t", n = 10 })
+  local na, nb = pair()
+  na:adoptChannel(ca); nb:adoptChannel(cb)
+  pump(na, nb)
+  eq(#na:pumpResumes(), 0, "the host's end is still there")
+  eq(#nb:pumpResumes(), 0, "the guest's end is still there")
+  pump(na, nb)
+  local got = cb:poll()
+  eq(#got, 2, "the missed messages arrive")
+  eq(got[1] and got[1].n, 2, "in order")
+  eq(got[2] and got[2].n, 3, "the one sent while down too")
+  got = ca:poll()
+  eq(#got, 1, "and the other way")
+  eq(got[1] and got[1].n, 10, "the guest's message")
+  cb:push({ type = "t", n = 2 }, 2)
+  eq(#cb:poll(), 0, "a repeat is dropped")
+  ca:send({ type = "t", n = 4 })
+  pump(na, nb)
+  eq(#cb:poll(), 1, "and it carries on")
+
+  -- the partner's game restarted: its battle is gone, so we hear so at once
+  local xa, xb = pair()
+  local kept = Channel.new(9, function() end)
+  kept.resumable = true; kept:suspend()
+  xa:adoptChannel(kept)
+  pump(xa, xb)
+  eq(#xb:pumpResumes(), 0, "the restarted game has nothing to resume")
+  pump(xa, xb)
+  local gone = xa:pumpResumes()
+  eq(gone[1], 9, "and says so")
+
+  -- leaving on purpose isn't a drop
+  local la, lb = pair()
+  local chl = lb:openChannel(3); chl.resumable = true
+  la:close("left")
+  pump(la, lb)
+  check(chl.closed and not chl.suspended, "a goodbye fails the channel")
+end
+
 print(("%d/%d checks passed%s  (g3_coop link)"):format(checks - failures, checks,
   failures > 0 and (", " .. failures .. " FAILURES") or ""))
 os.exit(failures == 0 and 0 or 1)

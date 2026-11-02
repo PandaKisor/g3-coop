@@ -53,7 +53,7 @@ function Session:_fail(state, reason)
   if self.state == "refused" or self.state == "closed" then return end
   self.state, self.reason = state, reason
   for c, ch in pairs(self.channels) do
-    ch:fail("co-op connection lost")
+    if ch.resumable and not self.byeReceived then ch:suspend() else ch:fail("co-op connection lost") end
     self.channels[c] = nil
   end
   -- free the port now rather than whenever the socket is collected
@@ -86,6 +86,7 @@ function Session:_receive(raw)
     -- the partner has no picture of us yet; send one on the next tick
     self.presence:reset()
   elseif msg.type == P.BYE then
+    self.byeReceived = true
     self:_fail("closed", msg.reason == "left" and "partner_left" or msg.reason)
   elseif self.state == "connected" then
     if msg.type == P.POS then
@@ -99,13 +100,13 @@ function Session:_receive(raw)
     elseif msg.type == P.LINK then
       local ch = self.channels[msg.c]
       if ch then
-        ch:push(msg.m)
+        ch:push(msg.m, msg.s, msg.a)
       elseif self.earlyCount < Session.MAX_EARLY then
         -- the partner opens its end as it answers, so its first link
         -- messages land in the same batch as the answer, before main.lua
         -- has read the answer and opened ours; hold them for openChannel
         local q = self.early[msg.c] or {}
-        q[#q + 1] = msg.m
+        q[#q + 1] = msg
         self.early[msg.c] = q
         self.earlyCount = self.earlyCount + 1
       end
@@ -121,6 +122,9 @@ function Session:_receive(raw)
     elseif msg.type == P.TEAM then
       -- one setup per channel; a second one for the same number is ignored
       if self.teams[msg.c] == nil then self.teams[msg.c] = msg.d end
+    elseif msg.type == P.RESUME then
+      self.resumes = self.resumes or {}
+      if #self.resumes < 16 then self.resumes[#self.resumes + 1] = msg end
     elseif msg.type == P.PARTY then
       self.partnerParty = msg.p
     elseif msg.type == P.SL then
@@ -292,18 +296,46 @@ end
 function Session:openChannel(c)
   local old = self.channels[c]
   if old then old:close() end
-  local ch = self.Channel.new(c, function(n, m)
-    if self.state == "connected" then self:_send(self.P.link(n, m)) end
+  local ch = self.Channel.new(c, function(n, m, seq, ack)
+    if self.state == "connected" then self:_send(self.P.link(n, m, seq, ack)) end
   end)
   self.channels[c] = ch
   local early = self.early[c]
   if early then
-    for _, m in ipairs(early) do ch:push(m) end
+    for _, m in ipairs(early) do ch:push(m.m, m.s, m.a) end
     self.earlyCount = self.earlyCount - #early
   end
   -- anything held for other numbers belongs to requests that are over
   self.early, self.earlyCount = {}, 0
   return ch
+end
+
+-- take over a channel a dropped session left suspended, and ask for the rest
+function Session:adoptChannel(ch)
+  self.channels[ch.c] = ch
+  ch:rebind(function(n, m, seq, ack)
+    if self.state == "connected" then self:_send(self.P.link(n, m, seq, ack)) end
+  end)
+  self:_send(self.P.resume(ch.c, ch.got))
+end
+
+-- answers to coop_resume, after main.lua has adopted its held channel: returns
+-- the numbers the partner no longer has
+function Session:pumpResumes()
+  local gone = {}
+  local list = self.resumes or {}
+  self.resumes = {}
+  for _, msg in ipairs(list) do
+    local ch = self.channels[msg.c]
+    if msg.none then
+      gone[#gone + 1] = msg.c
+    elseif ch then
+      ch:resend(msg.got)
+    else
+      self:_send(self.P.resume(msg.c, 0, true))
+    end
+  end
+  return gone
 end
 
 function Session:closeChannel(c)
@@ -317,6 +349,7 @@ function Session:stale()
 end
 
 function Session:close(reason)
+  self.byeReceived = true -- leaving on purpose: nothing to resume
   if self.state ~= "closed" and self.state ~= "refused" and self.net.paired then
     self:_send(self.P.bye(reason or "left"))
   end

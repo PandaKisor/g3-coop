@@ -516,16 +516,61 @@ return function(mod)
     npcs:forget()
     if requests then requests:reset() end
     requests = nil
-    -- a battle or trade in progress sees its channel fail and winds down
-    -- through the engine (draw / aborted trade); it keeps being stepped
+    -- a team battle in full swing waits for the partner to come back: its
+    -- channel is suspended and a new session picks it up (mod.linkAdopt)
+    local LB0 = engine("link.battle")
+    local ch = activity and activity.kind == "team" and activity.channel
+    if ch and ch.suspended and not mod.linkHold then
+      if LB0 and LB0.state == "battle" then
+        mod.linkHold = { ch = ch, deadline = clock() + 60, peer = session and session.peer and session.peer.name }
+      else
+        ch:fail("co-op connection lost")
+      end
+    end
+    if not mod.linkHold then
+      -- a battle or trade in progress sees its channel fail and winds down
+      -- through the engine (draw / aborted trade); it keeps being stepped
+      if activity then activity:abort("partner_left") end
+      -- a team battle in progress pauses at once (the link's own timeout
+      -- would get there in about nine seconds)
+      if activity and activity.kind == "team" then
+        local Battle, LB = engine("battle"), engine("link.battle")
+        if Battle and Battle.coopPause and LB and LB.state == "battle" then pcall(Battle.coopPause, "partner_left") end
+      end
+    end
+    session = nil
+  end
+
+  -- stop waiting for a dropped partner: the usual choice to go on alone or end
+  function mod.linkGiveUp()
+    local H = mod.linkHold
+    if not H then return end
+    mod.linkHold = nil
+    H.ch:fail("co-op connection lost")
     if activity then activity:abort("partner_left") end
-    -- a team battle in progress pauses at once (the link's own timeout
-    -- would get there in about nine seconds)
     if activity and activity.kind == "team" then
       local Battle, LB = engine("battle"), engine("link.battle")
       if Battle and Battle.coopPause and LB and LB.state == "battle" then pcall(Battle.coopPause, "partner_left") end
     end
-    session = nil
+  end
+
+  -- a new connection: pick the held battle back up, or learn it's gone
+  function mod.linkAdopt(s)
+    local H = mod.linkHold
+    if H then
+      if H.peer and s.peer and s.peer.name ~= H.peer then return mod.linkGiveUp() end
+      mod.linkHold = nil
+      s:adoptChannel(H.ch)
+      s:setBusy("battle")
+      toast("Reconnected. The battle goes on.", 3)
+    end
+    for _, c in ipairs(s:pumpResumes()) do
+      if activity and activity.channel and activity.channel.c == c then
+        activity.channel.suspended = true
+        mod.linkHold = { ch = activity.channel, deadline = 0, peer = H and H.peer }
+        mod.linkGiveUp()
+      end
+    end
   end
 
   local function disconnect(reason)
@@ -752,6 +797,7 @@ return function(mod)
   local function startActivity(act, id, t)
     local s = session
     local ch = s:openChannel(id)
+    ch.resumable = act ~= "trade" and act ~= "battle" -- team battles of every kind
     if act == "trade" or act == "battle" then
       -- whole parties first, ahead of the engine's own link messages
       endTradeFull()
@@ -784,9 +830,11 @@ return function(mod)
       now = clock, E = activityEngine(), team = act == "team" and teamDeps(s, id, wildPick) or nil,
       onEnd = function(result, why)
         if activity == mine then activity = nil end
-        if session == s then
-          s:closeChannel(id)
-          s:setBusy("none")
+        -- (a dropped connection's channel may be on a newer session by now)
+        if mod.linkHold and mod.linkHold.ch == ch then mod.linkHold = nil end
+        if session then
+          session:closeChannel(id)
+          session:setBusy("none")
         end
         if requests then requests:finished() end
         if act == "team" then teamState, pausePanel = nil, nil end
@@ -1088,6 +1136,7 @@ return function(mod)
       menuPending = false
       coopMenu(g)
     end
+    if mod.linkHold and clock() >= mod.linkHold.deadline then mod.linkGiveUp() end
     if not session and retryAt and clock() >= retryAt then
       retryAt = nil
       local keep = status
@@ -1119,6 +1168,7 @@ return function(mod)
       return
     end
     if session.state ~= "connected" then return end
+    mod.linkAdopt(session)
     if slConnected ~= session then
       slConnected = session
       tracker:onConnected()
@@ -1505,6 +1555,7 @@ return function(mod)
       if retryAt and not session then
         retryAt = nil
         status = "CO-OP: stopped reconnecting - F8 to connect"
+        mod.linkGiveUp()
         return true
       end
       retryAt = nil
@@ -2680,9 +2731,12 @@ return function(mod)
     local st = Battle.isActive and Battle.isActive() and Battle.getState and Battle.getState()
     local pick = st and st.coopTeam and Battle.partnerPick and Battle.partnerPick()
     local waiting = st and st.coopTeam and Battle._phase == "linkwait" and Battle._linkMulti
-    if pick or waiting then
+    local H = mod.linkHold
+    if pick or waiting or H then
       if not (waitToast and waitToast.untilT >= now) then waitToast = toast("", 1) end
-      waitToast.text = pick and pickText(name, pick) or (LB._retract and ("Asking " .. name .. "..."))
+      waitToast.text = H and ("Connection lost. Reconnecting to %s (%ds, F8 gives up)..."):format(
+          H.peer or "your partner", math.max(0, math.ceil(H.deadline - clock())))
+        or pick and pickText(name, pick) or (LB._retract and ("Asking " .. name .. "..."))
         or ("Waiting for " .. name .. ". B: change your pick.")
       waitToast.untilT = now + 0.25
     elseif waitToast then
