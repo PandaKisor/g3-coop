@@ -617,6 +617,7 @@ return function(mod)
   end
 
   local function eligible(act)
+    if act == "ready" then return true end
     if act == "team" or act == "wild" or act == "trainer" or act == "joint" then
       if not hasLivingMon() then return false, "no_mons" end
       return true
@@ -1604,7 +1605,7 @@ return function(mod)
     local s = session
     if s and s.state == "connected" then
       local name = tostring(s.peer and s.peer.name or "your partner")
-      ui.menu("Playing with " .. name .. ".", { "LEAVE", "SOUL LINK", "CANCEL" }, function(i)
+      ui.menu("Playing with " .. name .. ".", { "LEAVE", "READY CHECK", "SOUL LINK", "CANCEL" }, function(i)
         if i == 0 then
           ui.ask("Stop playing with " .. name .. "?", function(yes)
             if yes then
@@ -1614,6 +1615,8 @@ return function(mod)
             end
           end)
         elseif i == 1 then
+          if requests then requests:request("ready") end
+        elseif i == 2 then
           openPanel(true)
         end
       end)

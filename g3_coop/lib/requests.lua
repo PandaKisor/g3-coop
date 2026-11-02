@@ -20,8 +20,8 @@ Requests.AUTO_ACCEPT = { joint = true }
 -- (mid-step, in a menu, reading a sign) before it is turned down as busy
 Requests.PROMPT_SECONDS = 8
 
-Requests.MENU = { "WAVE", "BATTLE", "TRADE", "CANCEL" }
-local MENU_ACT = { [0] = "wave", [1] = "battle", [2] = "trade" }
+Requests.MENU = { "WAVE", "BATTLE", "TRADE", "READY?", "CANCEL" }
+local MENU_ACT = { [0] = "wave", [1] = "battle", [2] = "trade", [3] = "ready" }
 local ACT_WORD = { battle = "battle", trade = "trade", team = "team up against trainers",
                    wild = "battle the wild POKeMON they found together",
                    trainer = "battle a TRAINER together", joint = "start a fight you both have to be in" }
@@ -124,6 +124,11 @@ function Requests:_answerIncoming(yes, why)
   local s = self.d.session()
   if not s then return end
   s:answer(inc.id, yes, why)
+  -- a ready check is only the question: nothing starts
+  if inc.act == "ready" then
+    self.d.ui.toast(yes and ("You told " .. self:_name() .. " you're ready.") or ("You told " .. self:_name() .. " you need a moment."))
+    return
+  end
   if yes then self:_start(inc.act, inc.id, inc.t) end
 end
 
@@ -154,7 +159,10 @@ function Requests:_onAnswer(msg)
   self.outgoing = nil
   local d = self.d
   d.ui.close()
-  if msg.ok then
+  if out.act == "ready" then
+    d.ui.toast(msg.ok and (self:_name() .. " is ready!") or msg.why == "no" and (self:_name() .. " needs a moment.")
+      or DECLINE_TEXT[msg.why or "no"]:format(self:_name()))
+  elseif msg.ok then
     self:_start(out.act, out.id, out.t)
   else
     d.ui.toast(DECLINE_TEXT[msg.why or "no"]:format(self:_name()))
@@ -183,7 +191,9 @@ function Requests:_showIncoming()
     d.ui.toast("Joining " .. self:_name() .. "'s fight!")
     return self:_answerIncoming(true)
   end
-  d.ui.ask(self:_name() .. " wants to " .. ACT_WORD[inc.act] .. ".\nIs that okay?", function(yes)
+  local question = inc.act == "ready" and (self:_name() .. " asks if you're ready\nfor the next fight.")
+    or (self:_name() .. " wants to " .. ACT_WORD[inc.act] .. ".\nIs that okay?")
+  d.ui.ask(question, function(yes)
     if self.incoming ~= inc then return end
     d.ui.close()
     self:_answerIncoming(yes, yes and nil or "no")

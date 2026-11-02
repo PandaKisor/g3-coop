@@ -390,6 +390,30 @@ do
   check(not E.LT.loopbackCommit, "and the commit mode as it found it")
 end
 
+-- ------- ready check: a question, nothing starts
+
+do
+  local A, B, both = requestPair()
+  A.r:talk()
+  eq(A.ui.shown.labels[4], "READY?", "the partner menu offers it")
+  A.ui.shown.cb(3)
+  check(A.r.outgoing ~= nil and A.r.outgoing.act == "ready", "asking waits for an answer")
+  both(4)
+  eq(B.ui.shown and B.ui.shown.kind, "ask", "the partner gets the question")
+  check(B.ui.shown.text:find("ready", 1, true) ~= nil, "in ready words")
+  B.ui.shown.cb(true)
+  both(4)
+  eq(#A.started + #B.started, 0, "no activity starts")
+  check(A.r.outgoing == nil and B.r.incoming == nil and not A.r.busy and not B.r.busy, "both are free again")
+
+  check(A.r:request("ready"), "asking again works")
+  both(4)
+  B.ui.shown.cb(false)
+  both(4)
+  eq(#A.started + #B.started, 0, "a no starts nothing either")
+  check(A.r.outgoing == nil, "and clears the question")
+end
+
 -- ------- a dropped connection: a team battle's channel survives
 
 do
