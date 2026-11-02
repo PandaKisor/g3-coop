@@ -1138,6 +1138,11 @@ return function(mod)
       menuPending = false
       coopMenu(g)
     end
+    if mod.coopLater and fieldFree() then
+      local fn = mod.coopLater
+      mod.coopLater = nil
+      fn()
+    end
     if mod.linkHold and clock() >= mod.linkHold.deadline then mod.linkGiveUp() end
     if not session and retryAt and clock() >= retryAt then
       retryAt = nil
@@ -1610,15 +1615,17 @@ return function(mod)
 
   -- ------------------------------------------------------- START > CO-OP
 
-  coopMenu = function(g)
+  -- START > CO-OP: what it says and offers right now. { info, items = {
+  -- { label, fn } } }; CANCEL is added by the plain menu only.
+  function slui.coopSpec(g)
     local addr = tostring(setting("address") or ""):match("^%s*(.-)%s*$")
     local port = math.floor(tonumber(setting("port")) or Net.defaultPort())
     if not addr:match(":%d+$") then addr = addr .. ":" .. port end
     local s = session
     if s and s.state == "connected" then
       local name = tostring(s.peer and s.peer.name or "your partner")
-      ui.menu("Playing with " .. name .. ".", { "LEAVE", "READY CHECK", "SEND ITEM", "GO TO PARTNER", "SOUL LINK", "CANCEL" }, function(i)
-        if i == 0 then
+      return { info = "Playing with " .. name .. ".", items = {
+        { "LEAVE", function()
           ui.ask("Stop playing with " .. name .. "?", function(yes)
             if yes then
               retryAt = nil
@@ -1626,46 +1633,44 @@ return function(mod)
               status = "CO-OP: disconnected"
             end
           end)
-        elseif i == 1 then
-          if requests then requests:request("ready") end
-        elseif i == 2 then
-          slui.chooseItem()
-        elseif i == 3 then
-          slui.goToPartner()
-        elseif i == 4 then
-          openPanel(true)
-        end
-      end)
+        end },
+        { "READY CHECK", function() if requests then requests:request("ready") end end },
+        { "SEND ITEM", function() slui.chooseItem() end },
+        { "GO TO PARTNER", function() slui.goToPartner() end },
+        { "SOUL LINK", function() openPanel(true) end } } }
     elseif s or retryAt then
-      local what = (s and s.role == "host" and s.state == "waiting") and "Waiting for your partner."
-        or "Connecting..."
-      ui.menu(what, { "STOP", "SOUL LINK", "CANCEL" }, function(i)
-        if i == 0 then
-          retryAt = nil
-          disconnect("left")
-          status = nil
-        elseif i == 1 then
-          openPanel(true)
-        end
-      end)
-    else
-      ui.menu("HOST a game here, or JOIN\n" .. addr .. "?", { "HOST", "JOIN", "ADDRESS", "SOUL LINK", "CANCEL" },
-        function(i)
-          if i == 0 or i == 1 then
-            retryAt = nil
-            local role = i == 0 and "host" or "join"
-            -- remembered, so CONNECT ON LOAD and reconnects know which
-            local c = connStored() or {}
-            c.role = role
-            connWrite(c)
-            connect(g or game, role)
-          elseif i == 2 then
-            openEditor()
-          elseif i == 3 then
-            openPanel(true)
-          end
-        end)
+      return { info = (s and s.role == "host" and s.state == "waiting") and "Waiting for your partner."
+        or "Connecting...", items = {
+        { "STOP", function() retryAt = nil disconnect("left") status = nil end },
+        { "SOUL LINK", function() openPanel(true) end } } }
     end
+    local function go(role)
+      return function()
+        retryAt = nil
+        -- remembered, so CONNECT ON LOAD and reconnects know which
+        local c = connStored() or {}
+        c.role = role
+        connWrite(c)
+        connect(g or game, role)
+      end
+    end
+    return { info = "HOST a game here, or JOIN\n" .. addr .. "?", items = {
+      { "HOST", go("host") }, { "JOIN", go("join") },
+      { "ADDRESS", function() openEditor() end },
+      { "SOUL LINK", function() openPanel(true) end } } }
+  end
+
+  -- the plain menu (a message and a choice), for when the campaign's START
+  -- submenus aren't there
+  coopMenu = function(g)
+    local spec = slui.coopSpec(g)
+    local labels = {}
+    for i, it in ipairs(spec.items) do labels[i] = it[1] end
+    labels[#labels + 1] = "CANCEL"
+    ui.menu(spec.info, labels, function(i)
+      local it = i and spec.items[i + 1]
+      if it then it[2]() end
+    end)
   end
 
   mod.hooks:wrap("ui.start_menu.items", function(next, g, items)
@@ -1680,6 +1685,21 @@ return function(mod)
       id = "g3_coop", label = "CO-OP",
       onSelect = function()
         local StartMenu = uiModule("start_menu")
+        -- in the START window as a submenu (the campaign's), B back to START;
+        -- a choice closes START and runs from the field on the next free tick
+        local sub = g and g.mods and g.mods.exports and g.mods.exports.g3_campaign
+        sub = sub and sub.startSub
+        if sub then
+          local spec = slui.coopSpec(g)
+          local entries = {}
+          for i, it in ipairs(spec.items) do
+            entries[i] = { id = "g3_coop_" .. i, label = it[1], onSelect = function()
+              if StartMenu and StartMenu.close then StartMenu.close(true) end
+              mod.coopLater = it[2]
+            end }
+          end
+          if sub(entries, spec.info) then return end
+        end
         if StartMenu and StartMenu.close then StartMenu.close(true) end
         -- opened from the field on the next free tick, once the start
         -- menu's window is gone
@@ -2983,7 +3003,7 @@ return function(mod)
   mod.hooks:wrap("render.hud", function(next, g, viewport)
     next(g, viewport)
     if not (love and love.graphics) then return end
-    hud = hud or Hud.new(love.graphics)
+    hud = hud or Hud.new(love.graphics, { gameFont = true })
     local now = clock()
     pcall(linkWaitHint, now)
     for i = #toasts, 1, -1 do

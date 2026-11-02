@@ -11,13 +11,15 @@ Hud.__index = Hud
 Hud.FONT = "assets/fonts/plainpixel/PlainPixel-Regular.ttf"
 Hud.FONT_EM = 15
 
--- the campaign's palette (campaign/ui_style.lua): its ink for the boxes,
--- its Emerald green for co-op
+-- the same windows as the game's menus (campaign/ui_style.lua): a paper
+-- box with a dark edge and an Emerald-green line, text in the game's own
+-- font with its light shadow
 local C = {
-  bg = { 0.165, 0.196, 0.235, 0.92 }, edge = { 0.275, 0.722, 0.612, 0.35 }, row = { 1, 1, 1, 0.04 },
-  text = { 1, 1, 1, 1 }, dim = { 0.70, 0.74, 0.80, 1 },
-  coop = { 0.275, 0.722, 0.612, 1 }, sl = { 0.72, 0.56, 1, 1 },
-  good = { 0.45, 0.9, 0.5, 1 }, warn = { 1, 0.78, 0.32, 1 }, bad = { 1, 0.42, 0.42, 1 },
+  bg = { 0.984, 0.984, 0.969, 0.97 }, edge = { 0.165, 0.196, 0.235, 1 }, line = { 0.275, 0.722, 0.612, 1 },
+  row = { 0.165, 0.196, 0.235, 0.06 },
+  text = { 0.30, 0.30, 0.30, 1 }, dim = { 0.50, 0.52, 0.55, 1 },
+  coop = { 0.13, 0.52, 0.42, 1 }, sl = { 0.47, 0.30, 0.74, 1 },
+  good = { 0.15, 0.56, 0.20, 1 }, warn = { 0.72, 0.44, 0.04, 1 }, bad = { 0.80, 0.18, 0.14, 1 },
 }
 Hud.COLORS = C
 
@@ -26,8 +28,12 @@ local KIND = { coop = C.coop, sl = C.sl, bad = C.bad, good = C.good }
 local PILL = { alive = { "ALIVE", C.good }, dead = { "DEAD", C.bad },
                broken = { "BROKEN", C.bad }, waiting = { "WAITING", C.dim } }
 
-function Hud.new(gfx)
-  return setmetatable({ gfx = gfx, fonts = {}, scroll = 0 }, Hud)
+-- opts.gameFont: draw text in the game's own font (main.lua); without it
+-- (tests, or no font) the bundled Plain Pixel face
+function Hud.new(gfx, opts)
+  local self = setmetatable({ gfx = gfx, fonts = {}, scroll = 0 }, Hud)
+  if not (opts and opts.gameFont) then self.frlg = false end
+  return self
 end
 
 -- Split text into lines no wider than maxW (font:getWidth units), on
@@ -57,6 +63,23 @@ function Hud:_setup(vp, big)
   local scale = math.max(1, tonumber(vp.scale) or 2)
   local k = math.max(1, math.floor(scale / (big and 2.5 or 3.5) + 0.5))
   self.u = scale
+  -- the game's font, at k times its pixel size
+  if self.frlg == nil then
+    local ok, F = pcall(require, "src.ui.game3.frlg_font")
+    local okM, wA = false, 0
+    if ok and type(F) == "table" and F.draw and F.measure then okM, wA = pcall(F.measure, "A") end
+    self.frlg = (okM and (tonumber(wA) or 0) > 0) and F or false
+  end
+  if self.frlg then
+    self.fs, self.k = k, k
+    self.lh = (self.frlg.LINE_PITCH or 15) * k
+    self.gx, self.gy = 0, 0
+    self.gw = vp.width or vp.gameWidth or 240 * scale
+    self.gh = vp.height or vp.gameHeight or 160 * scale
+    self.docked = vp.dockX ~= nil
+    if self.docked then self.gx, self.gw = vp.dockX, vp.dockW end
+    return
+  end
   local font = self.fonts[k]
   if font == nil then
     local ok, f = pcall(self.gfx.newFont, Hud.FONT, Hud.FONT_EM * k)
@@ -91,10 +114,31 @@ function Hud:_maxW(share)
   return math.floor(self.gw * share)
 end
 
-function Hud:w(text) return self.font:getWidth(tostring(text)) * self.fs end
+-- the game's font has no < > | [ ] * #: the nearest it has
+local SWAP = { ["<>"] = "-", ["<"] = "◀", [">"] = "▶", ["|"] = "/", ["["] = "(", ["]"] = ")", ["*"] = "×", ["#"] = "No" }
+function Hud.clean(text)
+  return (tostring(text):gsub("<>", SWAP["<>"]):gsub("[<>|%[%]%*#]", SWAP))
+end
+
+function Hud:w(text)
+  if self.frlg then return (tonumber(self.frlg.measure(Hud.clean(text))) or 0) * self.fs end
+  return self.font:getWidth(tostring(text)) * self.fs
+end
 
 function Hud:_print(text, x, y, color, alpha)
   local g = self.gfx
+  if self.frlg then
+    local a = (color[4] or 1) * (alpha or 1)
+    local fg = { color[1], color[2], color[3], a }
+    local sh = { color[1] + (1 - color[1]) * 0.72, color[2] + (1 - color[2]) * 0.72, color[3] + (1 - color[3]) * 0.72, a }
+    g.push()
+    g.translate(math.floor(x), math.floor(y))
+    g.scale(self.fs, self.fs)
+    self.frlg.draw(Hud.clean(text), 0, 0, { colors = { fg = fg, shadow = sh, bg = { 0, 0, 0, 0 } } })
+    g.pop()
+    g.setColor(1, 1, 1, 1)
+    return
+  end
   g.setFont(self.font)
   g.setColor(color[1], color[2], color[3], (color[4] or 1) * (alpha or 1))
   g.print(tostring(text), math.floor(x), math.floor(y), 0, self.fs, self.fs)
@@ -103,11 +147,17 @@ end
 function Hud:_box(x, y, w, h, alpha, accent)
   local g = self.gfx
   local r = math.max(2, self.u)
-  g.setColor(C.bg[1], C.bg[2], C.bg[3], C.bg[4] * (alpha or 1))
+  local a = alpha or 1
+  -- one game pixel each: dark edge, green line, then the paper
+  local p = math.max(1, math.floor(self.u / 2 + 0.5))
+  g.setColor(C.edge[1], C.edge[2], C.edge[3], 0.18 * a)
+  g.rectangle("fill", x + p, y + p * 2, w, h, r, r)
+  g.setColor(C.edge[1], C.edge[2], C.edge[3], a)
   g.rectangle("fill", x, y, w, h, r, r)
-  g.setColor(C.edge[1], C.edge[2], C.edge[3], C.edge[4] * (alpha or 1))
-  g.setLineWidth(1)
-  g.rectangle("line", x + 0.5, y + 0.5, w - 1, h - 1, r, r)
+  g.setColor(C.line[1], C.line[2], C.line[3], a)
+  g.rectangle("fill", x + p, y + p, w - p * 2, h - p * 2, r, r)
+  g.setColor(C.bg[1], C.bg[2], C.bg[3], a)
+  g.rectangle("fill", x + p * 2, y + p * 2, w - p * 4, h - p * 4, r / 2, r / 2)
   if accent then
     g.setColor(accent[1], accent[2], accent[3], (alpha or 1))
     g.rectangle("fill", x, y + r, math.max(2, math.floor(self.u / 2)), h - 2 * r)
@@ -221,9 +271,10 @@ function Hud:drawPanel(vp, data, iconFor, view)
   self:_setup(vp, true)
   local g = self.gfx
   local pad = math.max(4, self.u * 3)
-  local width = math.min(self.gw - pad * 2, math.max(self.lh * 40, math.floor(self.gw * 0.7)))
-  local height = self.gh - pad * 2
-  local x, y = self.gx + math.floor((self.gw - width) / 2), self.gy + pad
+  -- a window over the field, like the game's menus, not the whole screen
+  local width = math.min(self.gw - pad * 2, math.max(self.lh * 26, math.floor(self.gw * 0.64)))
+  local height = math.min(self.gh - pad * 2, math.floor(self.gh * 0.84))
+  local x, y = self.gx + math.floor((self.gw - width) / 2), self.gy + math.floor((self.gh - height) / 2)
   self:_box(x, y, width, height, 1, C.sl)
   local cx, cy = x + pad * 1.5, y + pad
   local right = x + width - pad
@@ -429,7 +480,7 @@ function Hud:drawPanel(vp, data, iconFor, view)
       local word = it.on and "ON" or "OFF"
       self:_print(word, px + (pillW - self:w(word)) / 2, ry + (rowH - self.lh) / 2, col)
     end
-    foot = "UP/DOWN pick   A toggles   LEFT/RIGHT tabs   F7 closes"
+    foot = "↑↓ pick  A toggle  ←→ tabs  F7 close"
   end
 
   local fit = math.max(1, math.floor((bottom - cy) / rowH))
@@ -454,9 +505,9 @@ function Hud:drawPanel(vp, data, iconFor, view)
   end
 
   if not foot then
-    foot = "LEFT/RIGHT tabs   F7 closes"
+    foot = "←→ tabs  F7 close"
     if maxScroll > 0 then
-      foot = ("UP/DOWN scroll (%d-%d of %d)   "):format(self.scroll + 1, math.min(#items, self.scroll + fit), #items) .. foot
+      foot = ("↑↓ %d-%d of %d  "):format(self.scroll + 1, math.min(#items, self.scroll + fit), #items) .. foot
     end
   end
   self:_print(foot, cx, y + height - pad - self.lh, C.dim)
