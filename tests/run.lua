@@ -1010,4 +1010,15 @@ do
   T.eq(ip.state, "failed", "no transport: the home address stays")
 end
 
+-- the partner's team for the TEAM tab
+do
+  local row = { s = 25, l = 12, h = 30, x = 34, i = 5, st = "BRN", n = "SPARKY", mv = { 1, 2 } }
+  local m = Protocol.validate(Protocol.party({ row }))
+  T.check(m ~= nil and m.p[1].s == 25 and m.p[1].st == "BRN" and #m.p[1].mv == 2, "a party row passes")
+  T.check(Protocol.validate(Protocol.party({ row, row, row, row, row, row, row })) == nil, "seven rows are refused")
+  T.check(Protocol.validate(Protocol.party({ { s = 25 } })) == nil, "a row missing its numbers is refused")
+  local bad = { s = 25, l = 12, h = 30, x = 34, st = "a b" }
+  T.check(Protocol.validate(Protocol.party({ bad })).p[1].st == nil, "an odd status text is dropped")
+end
+
 T.finish("g3_coop")

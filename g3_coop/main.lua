@@ -1099,6 +1099,7 @@ return function(mod)
     end
     if not session then return end
     session:tick(snapshot(g))
+    if mod.partySend then pcall(mod.partySend) end
     if session.state == "refused" or session.state == "closed" then
       local why = session.reason
       if session.sameMachine == true and why == "network_error" then
@@ -2489,10 +2490,184 @@ return function(mod)
       { cap and ("Level cap %d"):format(cap) or ("Ace Lv%d"):format(storyState.cap), Hud.COLORS.warn } } }
   end
 
+  -- the campaign's stat, field and matchup card while choosing in a battle
+  function slui.battleCard()
+    for _, ex in pairs(game and game.mods and game.mods.exports or {}) do
+      if type(ex) == "table" and type(ex.campaignBattleInfo) == "function" then return ex.campaignBattleInfo() end
+    end
+  end
+
+  -- this player's party for the partner's TEAM tab: at most once a second,
+  -- only when it changed, and again for each new connection
+  function slui.sendParty()
+    if not (session and session.state == "connected") then return end
+    local now = clock()
+    if (slui.partyAt or 0) > now then return end
+    slui.partyAt = now + 1
+    local rt = engine("runtime")
+    local s = rt and rt.getSession and rt.getSession()
+    if not (s and s.party) then return end
+    local list, sig = {}, {}
+    for i = 1, math.min(6, #s.party) do
+      local m = s.party[i]
+      local mv = {}
+      for j = 1, 4 do
+        local id = m.moves and tonumber(type(m.moves[j]) == "table" and (m.moves[j].id or m.moves[j].move) or m.moves[j])
+        if id and id > 0 then mv[#mv + 1] = id end
+      end
+      local st = type(m.status) == "string" and m.status ~= "" and m.status:gsub("%W", "") or nil
+      local nick = type(m.nickname) == "string" and m.nickname ~= "" and m.nickname:sub(1, 12) or nil
+      list[i] = { s = tonumber(m.species), l = tonumber(m.level), h = tonumber(m.hp) or 0,
+                  x = tonumber(m.maxHp) or 1, i = tonumber(m.item or m.heldItem) or 0, st = st, n = nick, mv = mv }
+      sig[i] = table.concat({ tostring(list[i].s), tostring(list[i].l), list[i].h, list[i].x, list[i].i, tostring(st),
+                              tostring(nick), table.concat(mv, ",") }, ":")
+    end
+    local text = table.concat(sig, "|")
+    if slui.partySession == session and slui.partySig == text then return end
+    slui.partySession, slui.partySig = session, text
+    session:sendParty(list)
+  end
+
+  mod.partySend = slui.sendParty
+
+  -- TEAM tab: what the partner last sent, as label / text / colour rows
+  function slui.teamRows()
+    local list = session and session.partnerParty
+    local c = Hud.COLORS
+    if not (session and session.state == "connected") then return { { "Partner", "not connected", c.dim } } end
+    if not list then return { { "Partner", "waiting for their team...", c.dim } } end
+    local P, Moves, Items = engine("pokemon"), engine("battle.moves"), engine("items_data")
+    local rows = {}
+    for _, m in ipairs(list) do
+      local name = m.n or (P and P.name and P.name(m.s)) or "?"
+      local hp = ("HP %d/%d"):format(m.h, m.x)
+      if m.st then hp = hp .. "  " .. m.st end
+      if m.i and m.i ~= 0 and Items then
+        local ok, it = pcall(Items.displayName, m.i)
+        if ok and it then hp = hp .. "  " .. tostring(it) end
+      end
+      rows[#rows + 1] = { ("%s Lv%d"):format(name, m.l), hp, m.h > 0 and c.text or c.bad }
+      local mv = {}
+      for i, id in ipairs(m.mv or {}) do
+        local ok, n = pcall(Moves.displayName, id)
+        mv[i] = ok and tostring(n) or "?"
+      end
+      if #mv > 0 then rows[#rows + 1] = { "", table.concat(mv, ", "), c.dim } end
+    end
+    return rows
+  end
+
+  -- AREA tab: this area's encounter state and what lives here
+  slui.SLOT_ODDS = { land = { 20, 20, 10, 10, 10, 10, 5, 5, 4, 4, 1, 1 }, water = { 60, 30, 5, 4, 1 },
+    rocks = { 60, 30, 5, 4, 1 }, fishing = { 70, 30, 60, 20, 20, 40, 40, 15, 4, 1 } }
+  slui.METHOD = { { "land", "Grass" }, { "water", "Surf" }, { "rocks", "Rock Smash" }, { "fishing", "Fishing" } }
+  function slui.areaRows()
+    local c = Hud.COLORS
+    local rows = {}
+    local a = tracker.d.areaOf()
+    rows[1] = { "Here", a and tracker.d.areaName(a) or "?", c.text }
+    if tracker and a and tracker.run then
+      local v = tracker:view()
+      local function state(ar)
+        if not ar then return "still open", c.good end
+        if ar.state == "failed" then return "used, missed", c.bad end
+        if ar.state == "pending" then return "in battle", c.warn end
+        return "used, caught", c.dim
+      end
+      local text, col = state(v.mine.areas[a])
+      rows[#rows + 1] = { "You", text, col }
+      text, col = state(v.theirs.areas[a])
+      rows[#rows + 1] = { tracker.run.partner and tracker.run.partner.nm or "Partner", text, col }
+    end
+    local Enc, Map, P = engine("encounters"), engine("map"), engine("pokemon")
+    local ok, t = pcall(Enc.tableFor, Map.current)
+    if not (ok and type(t) == "table") then
+      rows[#rows + 1] = { "Wild", "none here", c.dim }
+      return rows
+    end
+    local any = false
+    for _, m in ipairs(slui.METHOD) do
+      local area = t[m[1]] or (m[1] == "land" and t.grass) or nil
+      local slots = area and (area.slots or area.mons or area)
+      if type(slots) == "table" and #slots > 0 then
+        local pct, low, high, order = {}, {}, {}, {}
+        for i, s in ipairs(slots) do
+          local id = tonumber(s.species)
+          if id then
+            if not pct[id] then order[#order + 1] = id; pct[id] = 0 end
+            pct[id] = pct[id] + (slui.SLOT_ODDS[m[1]][i] or 0)
+            low[id] = math.min(low[id] or 100, tonumber(s.minLevel or s.min) or 100)
+            high[id] = math.max(high[id] or 1, tonumber(s.maxLevel or s.max) or 1)
+          end
+        end
+        for _, id in ipairs(order) do
+          any = true
+          local taken = tracker and tracker.run and tracker:lineTaken(id)
+          local left = m[1] == "fishing" and "by rod" or (pct[id] .. "%")
+          rows[#rows + 1] = { m[2] .. "  " .. tostring(P.name(id)), ("%s  Lv%s%s"):format(left, low[id] == high[id] and low[id] or (low[id] .. "-" .. high[id]),
+            taken and "  line taken" or ""), taken and c.dim or c.text }
+        end
+      end
+    end
+    if not any then rows[#rows + 1] = { "Wild", "none here", c.dim } end
+    return rows
+  end
+
+  -- PC warnings: a linked POKeMON leaving the team, or the game
+  function slui.linkWarning(mon, what)
+    local name = tracker and tracker.linkedName and tracker:linkedName(mon)
+    if name then toast(("Soul Link: linked with %s. %s"):format(name, what), 6) end
+  end
+  local linkStorage = engine("storage")
+  if linkStorage and not linkStorage._g3coopLinkWarn then
+    local Storage = linkStorage
+    Storage._g3coopLinkWarn = true
+    local deposit, place = Storage.deposit, Storage.placeHeldMon
+    Storage.deposit = function(s, partyIdx, ...)
+      pcall(slui.linkWarning, s and s.party and s.party[partyIdx], "Box its partner too.")
+      return deposit(s, partyIdx, ...)
+    end
+    Storage.placeHeldMon = function(s, mon, loc, slot, boxId, origin, ...)
+      if loc == "box" and type(origin) == "table" and origin.loc == "party" then
+        pcall(slui.linkWarning, mon, "Box its partner too.")
+      end
+      return place(s, mon, loc, slot, boxId, origin, ...)
+    end
+  end
+  do
+    local okR, Release = pcall(require, "src.ui.game3.release_seq")
+    if okR and type(Release) == "table" and not Release._g3coopLinkWarn then
+      Release._g3coopLinkWarn = true
+      local start = Release.start
+      Release.start = function(opts, ...)
+        pcall(slui.linkWarning, opts and opts.mon, "Releasing it breaks the pair.")
+        return start(opts, ...)
+      end
+    end
+  end
+
   -- A co-op battle pick can be taken back with B while the partner hasn't
   -- chosen (the cart's link/battle.lua: LB.requestRetract). Say so while we
   -- wait, and how a take-back went.
   local waitToast
+  -- what the partner locked in this turn (the cart's Battle.partnerPick)
+  local function pickText(name, p)
+    local what
+    if p.kind == "move" then
+      local who = p.spread or p.target
+      return ("%s's %s: %s%s"):format(name, p.mon, tostring(p.move), who and (" on " .. who) or "")
+    elseif p.kind == "ball" then
+      what = "throwing " .. tostring(p.item)
+      if p.target then what = what .. " at " .. p.target end
+    elseif p.kind == "switch" then
+      what = "switching " .. p.mon .. " to " .. tostring(p.to or "another Pokemon")
+    elseif p.kind == "run" then
+      what = "running away"
+    else
+      what = "ready"
+    end
+    return name .. ": " .. what
+  end
   local function linkWaitHint(now)
     local Battle, LB = engine("battle"), engine("link.battle")
     if not (Battle and LB and LB.requestRetract) then return end
@@ -2503,9 +2678,11 @@ return function(mod)
       toast(done and "Pick again." or (name .. " already chose: your pick stays."), 2)
     end
     local st = Battle.isActive and Battle.isActive() and Battle.getState and Battle.getState()
-    if st and st.coopTeam and Battle._phase == "linkwait" and Battle._linkMulti then
+    local pick = st and st.coopTeam and Battle.partnerPick and Battle.partnerPick()
+    local waiting = st and st.coopTeam and Battle._phase == "linkwait" and Battle._linkMulti
+    if pick or waiting then
       if not (waitToast and waitToast.untilT >= now) then waitToast = toast("", 1) end
-      waitToast.text = LB._retract and ("Asking " .. name .. "...")
+      waitToast.text = pick and pickText(name, pick) or (LB._retract and ("Asking " .. name .. "..."))
         or ("Waiting for " .. name .. ". B: change your pick.")
       waitToast.untilT = now + 0.25
     elseif waitToast then
@@ -2538,6 +2715,12 @@ return function(mod)
     end
     if slPanel then
       local data = slui.panelData()
+      if data then
+        local okT, team = pcall(slui.teamRows)
+        data.team = okT and team or nil
+        local okA, area = pcall(slui.areaRows)
+        data.area = okA and area or { { "Area", tostring(area), Hud.COLORS.bad } }
+      end
       local locked = slui.rulesLocked()
       local view = { tab = slui.panelTabName(), rules = slui.rulesRows(), sel = slui.sel,
         locked = locked and (tostring(tracker.run.partner.nm or "Your partner")
@@ -2553,8 +2736,13 @@ return function(mod)
       return
     end
     local y
+    -- the choosing screen's battle info shows in any battle, shared ones too
+    local okB, battleCard = pcall(slui.battleCard)
+    if okB and battleCard then
+      local okD, below = pcall(hud.drawCard, hud, viewport, battleCard)
+      if okD then y = below else mod.log:warn("battle card: %s", tostring(below)) end
     -- the battle and trade screens use the whole screen; keep the toasts
-    if mod.options:get("hud") and not (activity and activity.stage ~= "link") then
+    elseif mod.options:get("hud") and not (activity and activity.stage ~= "link") then
       local okC, card = pcall(cardInfo)
       if okC and not card then okC, card = pcall(slui.nextCard) end
       if okC and card then

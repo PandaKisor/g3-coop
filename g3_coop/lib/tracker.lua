@@ -698,6 +698,26 @@ end
 
 -- --------------------------------------------------------------------- HUD
 
+-- The living Soul Link partner of a POKeMON on this save: its name, or nil.
+function Tracker:linkedName(mon)
+  if not (self.run and mon) then return nil end
+  local u = self.SL.uid(mon)
+  if not u then return nil end
+  for _, row in ipairs(self:view().pairs) do
+    if row.status == "alive" and row.mine and row.mine.u == u and row.theirs then
+      return self:_monName(row.theirs.u, row.theirs.s)
+    end
+  end
+end
+
+-- Whether this line is already in the run (the dupes clause counts it).
+function Tracker:lineTaken(species)
+  if not self.run then return false end
+  local v = self:view()
+  local b = v.baseOf and v.baseOf(species) or species
+  return v.lines[b] == true or v.lines[b] ~= nil
+end
+
 -- What the F7 panel shows, or nil with Soul Link off:
 --   { partner, rules = { "DUPES", ... }, rows = { { area, status, mine,
 --     theirs } }, extras = { { name, s, why } }, alive, gone, over }

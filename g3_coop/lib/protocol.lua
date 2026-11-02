@@ -15,7 +15,8 @@ local Protocol = {}
 -- 8: shared wild encounters (act "wild"), shared trainer credit (coop_credit)
 -- 9: trainer fights together (acts "trainer" and "joint", ask carries t)
 -- 10: shared story progression (coop_prog, lib/progress.lua)
-Protocol.VERSION = 10
+-- 11: the partner's party for the TEAM tab (coop_party)
+Protocol.VERSION = 11
 
 Protocol.HELLO = "coop_hello"
 Protocol.POS = "coop_pos"
@@ -28,6 +29,7 @@ Protocol.CANCEL = "coop_cancel"
 Protocol.LINK = "coop_link"
 Protocol.NPC = "coop_npc"
 Protocol.SL = "coop_sl"
+Protocol.PARTY = "coop_party"
 Protocol.TEAM = "coop_team"
 Protocol.CREDIT = "coop_credit"
 -- the field guide snapshot (party + box) a player shares with the partner
@@ -135,6 +137,10 @@ function Protocol.sl(f)
   return { type = Protocol.SL, hi = f.hi == true or nil, run = f.run, tid = f.tid,
            nm = f.nm, pt = f.pt, rules = f.rules, from = f.from, want = f.want, ev = f.ev }
 end
+
+-- This player's party, for the partner's TEAM tab: up to six rows of
+-- { s species, l level, h hp, x max hp, i item, st status, n nickname, mv moves }
+function Protocol.party(list) return { type = Protocol.PARTY, p = list } end
 
 -- A team battle's setup for channel c (lib/teambattle.lua): plain data
 -- (names, parties, the host's foes and seed) packed by Protocol.packTree.
@@ -454,6 +460,24 @@ local function slEvent(e)
     local by = str(e.by, 24)
     out.by = by and (by:gsub("[^%w %-%.!?'&]", "?")) or nil
     out.lv = int(e.lv, 1, 100)
+  end
+  return out
+end
+
+validators[Protocol.PARTY] = function(m)
+  if type(m.p) ~= "table" or #m.p > 6 then return nil, "bad_party" end
+  local out = { type = m.type, p = {} }
+  for i = 1, #m.p do
+    local e = m.p[i]
+    if type(e) ~= "table" then return nil, "bad_party" end
+    local row = { s = int(e.s, 1, 65535), l = int(e.l, 1, 100), h = int(e.h, 0, 9999), x = int(e.x, 1, 9999),
+                  i = int(e.i, 0, 65535) or 0, st = str(e.st, 8, "^%w+$"), n = slName(e.n), mv = {} }
+    if not (row.s and row.l and row.h and row.x) then return nil, "bad_party" end
+    for j = 1, math.min(4, type(e.mv) == "table" and #e.mv or 0) do
+      local mv = int(e.mv[j], 1, 65535)
+      if mv then row.mv[#row.mv + 1] = mv end
+    end
+    out.p[i] = row
   end
   return out
 end

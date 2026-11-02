@@ -121,6 +121,8 @@ function Session:_receive(raw)
     elseif msg.type == P.TEAM then
       -- one setup per channel; a second one for the same number is ignored
       if self.teams[msg.c] == nil then self.teams[msg.c] = msg.d end
+    elseif msg.type == P.PARTY then
+      self.partnerParty = msg.p
     elseif msg.type == P.SL then
       if #self.sl < 64 then self.sl[#self.sl + 1] = msg end
     elseif msg.type == P.NPC then
@@ -205,6 +207,10 @@ function Session:takeSoulLink()
   local list = self.sl
   self.sl = {}
   return list
+end
+
+function Session:sendParty(list)
+  if self.state == "connected" then self:_send(self.P.party(list)) end
 end
 
 function Session:sendSoulLink(fields)

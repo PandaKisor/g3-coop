@@ -183,7 +183,7 @@ end
 
 -- ------------------------------------------------------- the Soul Link panel
 
-Hud.TABS = { "LINKS", "FALLEN", "RUN", "RULES" }
+Hud.TABS = { "LINKS", "TEAM", "AREA", "FALLEN", "RUN", "RULES" }
 
 -- data: Tracker:panel() (nil when Soul Link is off).  iconFor(species) ->
 -- { image, quads } or nil.  view: { tab = one of Hud.TABS, rules = {
@@ -348,13 +348,13 @@ function Hud:drawPanel(vp, data, iconFor, view)
       cell(it.theirs, colT, ry, colW)
     end
 
-  elseif tab == "RUN" then
+  elseif tab == "RUN" or tab == "TEAM" or tab == "AREA" then
     rowH = math.floor(self.lh * 1.4)
     local st = data.stats or {}
     local partner = data.partner or "Partner"
     local function pair(t) return t and ("you %d   %s %d"):format(t[1] or 0, partner, t[2] or 0) or "-" end
     local nf = view.nextFight
-    items = {
+    items = tab == "TEAM" and (data.team or {}) or tab == "AREA" and (data.area or {}) or {
       { "Links", ("%d alive   %d dead   %d broken   %d waiting"):format(st.alive or 0, st.dead or 0,
         st.broken or 0, st.waiting or 0), C.text },
       { "Areas used", tostring(st.areas or 0), C.text },
