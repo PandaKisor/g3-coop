@@ -2953,6 +2953,7 @@ return function(mod)
 
   mod.exports.status = statusLine
   mod.exports.session = function() return session end
+  mod.exports.coopBanned = function(mon) return tracker:isBanned(mon) end
   mod.exports.compat = compat
   mod.exports.toasts = function() return toasts end
   mod.exports.drawEntry = partnerDrawEntry
