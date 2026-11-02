@@ -2648,6 +2648,77 @@ return function(mod)
     return { dot = "wait", title = "HP ATK DEF SPA SPD SPE", lines = lines }
   end
 
+  -- POKeMON > LINK (user, 2026-11-02): who this POKeMON is tied to and how
+  -- that one is doing, to weigh the risk before sending it out
+  function slui.linkInfo(mon)
+    if not (tracker and tracker.run and mon) then return nil end
+    local u = tracker.SL.uid(mon)
+    if not u then return nil end
+    local v = tracker:view()
+    local theirs
+    for _, row in ipairs(v.pairs) do
+      if row.mine and row.theirs and row.mine.u == u then theirs = row.theirs break end
+    end
+    if not theirs then return nil end
+    local who = tostring(tracker.run.partner and tracker.run.partner.nm or "your partner")
+    local name = tostring(tracker:_monName(theirs.u, theirs.s))
+    if v.dead[u] or v.dead[theirs.u] then
+      return ("Linked to %s's %s.\nThat link has fallen."):format(who, name)
+    end
+    -- by its id, or (a partner whose build sends none) the only one of its species
+    local party, hit = session and session.partnerParty or {}, nil
+    for _, m in ipairs(party) do if m.u and m.u == theirs.u then hit = m end end
+    if not hit then
+      local n = 0
+      for _, m in ipairs(party) do if not m.u and m.s == theirs.s then hit, n = m, n + 1 end end
+      if n ~= 1 then hit = nil end
+    end
+    if hit then
+      local hp = (hit.h or 0) <= 0 and "fainted" or ("HP %d/%d"):format(hit.h or 0, hit.x or 1)
+      return ("Linked to %s's %s.\nLv%d, %s%s."):format(who, name, hit.l or 0, hp, hit.st and ("  " .. hit.st) or "")
+    end
+    local where = (session and session.state == "connected" and session.partnerParty) and "Not in their party."
+      or "Their team shows once you're linked."
+    return ("Linked to %s's %s.\n%s"):format(who, name, where)
+  end
+  do
+    local PM = uiModule("party_menu")
+    if PM and PM.handleInput and not PM._g3coopLink then
+      PM._g3coopLink = PM.handleInput
+      local function addLink()
+        local mon = PM._party and PM._party[PM.cursor]
+        local list = PM.ACTIONS
+        if not (mon and type(list) == "table") then return end
+        for _, a in ipairs(list) do if a == "LINK" then return end end
+        local ok, text = pcall(slui.linkInfo, mon)
+        if not (ok and text) then return end
+        local okT, texts = pcall(PM._actionTextsFor, list)
+        if not (okT and texts) then return end
+        local out, words = {}, {}
+        for i, a in ipairs(list) do out[#out + 1], words[#words + 1] = a, texts[i] end
+        local at = math.min(2, #out + 1)
+        table.insert(out, at, "LINK")
+        table.insert(words, at, "LINK")
+        PM.ACTIONS = out
+        PM._actionTexts = { list = out, texts = words }
+      end
+      PM.handleInput = function(input, ...)
+        if PM.mode == "action" and input and input.wasPressed and input:wasPressed("a")
+            and PM.ACTIONS and PM.ACTIONS[PM.actionCursor] == "LINK" then
+          local mon = PM._party and PM._party[PM.cursor]
+          local ok, text = pcall(slui.linkInfo, mon)
+          local back = PM._previousMode
+          PM.showMessage(ok and text or "No link.", function() PM.mode = "action" PM._previousMode = back end)
+          return
+        end
+        local before, list = PM.mode, PM.ACTIONS
+        local r = PM._g3coopLink(input, ...)
+        if PM.mode == "action" and (before ~= "action" or PM.ACTIONS ~= list) then pcall(addLink) end
+        return r
+      end
+    end
+  end
+
   -- the campaign's stat, field and matchup card while choosing in a battle,
   -- with the Soul Link pairs out on the field shown all through the battle
   function slui.battleCard()
@@ -2682,8 +2753,10 @@ return function(mod)
       end
       local st = type(m.status) == "string" and m.status ~= "" and m.status:gsub("%W", "") or nil
       local nick = type(m.nickname) == "string" and m.nickname ~= "" and m.nickname:sub(1, 12) or nil
+      local okU, uid = pcall(function() return tracker and tracker.SL.uid(m) end)
       list[i] = { s = tonumber(m.species), l = tonumber(m.level), h = tonumber(m.hp) or 0,
-                  x = tonumber(m.maxHp) or 1, i = tonumber(m.item or m.heldItem) or 0, st = st, n = nick, mv = mv }
+                  x = tonumber(m.maxHp) or 1, i = tonumber(m.item or m.heldItem) or 0, st = st, n = nick, mv = mv,
+                  u = okU and uid or nil }
       sig[i] = table.concat({ tostring(list[i].s), tostring(list[i].l), list[i].h, list[i].x, list[i].i, tostring(st),
                               tostring(nick), table.concat(mv, ",") }, ":")
     end

@@ -510,7 +510,9 @@ validators[Protocol.PARTY] = function(m)
     local e = m.p[i]
     if type(e) ~= "table" then return nil, "bad_party" end
     local row = { s = int(e.s, 1, 65535), l = int(e.l, 1, 100), h = int(e.h, 0, 9999), x = int(e.x, 1, 9999),
-                  i = int(e.i, 0, 65535) or 0, st = str(e.st, 8, "^%w+$"), n = slName(e.n), mv = {} }
+                  i = int(e.i, 0, 65535) or 0, st = str(e.st, 8, "^%w+$"), n = slName(e.n), mv = {},
+                  -- its Soul Link id (POKeMON > LINK); older builds don't send it
+                  u = str(e.u, 24, "^%d+:%d+$") }
     if not (row.s and row.l and row.h and row.x) then return nil, "bad_party" end
     for j = 1, math.min(4, type(e.mv) == "table" and #e.mv or 0) do
       local mv = int(e.mv[j], 1, 65535)
