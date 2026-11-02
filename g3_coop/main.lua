@@ -2560,11 +2560,38 @@ return function(mod)
       { cap and ("Level cap %d"):format(cap) or ("Ace Lv%d"):format(storyState.cap), Hud.COLORS.warn } } }
   end
 
-  -- the campaign's stat, field and matchup card while choosing in a battle
-  function slui.battleCard()
-    for _, ex in pairs(game and game.mods and game.mods.exports or {}) do
-      if type(ex) == "table" and type(ex.campaignBattleInfo) == "function" then return ex.campaignBattleInfo() end
+  -- who the Pokemon out now are linked with, refreshed a few times a second
+  function slui.linkLines()
+    local now = clock()
+    if slui.linksAt and now < slui.linksAt then return slui.links end
+    slui.linksAt, slui.links = now + 0.4, nil
+    local Battle, State = engine("battle"), engine("battle.state")
+    local st = Battle and Battle.isActive and Battle.isActive() and Battle.getState and Battle.getState()
+    if not (st and tracker and tracker.run) then return nil end
+    local lines = {}
+    for _, id in ipairs({ 0, 2 }) do
+      local b = State.battler(st, id)
+      if b and b.mon and not State.isAbsent(st, id) then
+        local other = tracker:pairedName(b.mon)
+        if other then lines[#lines + 1] = ("%s <> %s"):format(tostring(State.displayName(b)), other) end
+      end
     end
+    slui.links = #lines > 0 and lines or nil
+    return slui.links
+  end
+
+  -- the campaign's stat, field and matchup card while choosing in a battle,
+  -- with the Soul Link pairs out on the field shown all through the battle
+  function slui.battleCard()
+    local card
+    for _, ex in pairs(game and game.mods and game.mods.exports or {}) do
+      if type(ex) == "table" and type(ex.campaignBattleInfo) == "function" then card = ex.campaignBattleInfo() end
+    end
+    local links = slui.linkLines()
+    if not links then return card end
+    card = card or { dot = "wait", title = "SOUL LINK", lines = {} }
+    for i, l in ipairs(links) do table.insert(card.lines, i, { l, Hud.COLORS.sl }) end
+    return card
   end
 
   -- this player's party for the partner's TEAM tab: at most once a second,
@@ -2593,21 +2620,51 @@ return function(mod)
                               tostring(nick), table.concat(mv, ",") }, ":")
     end
     local text = table.concat(sig, "|")
-    if slui.partySession == session and slui.partySig == text then return end
-    slui.partySession, slui.partySig = session, text
-    session:sendParty(list)
+    -- the frame rate goes along, rounded so it doesn't send all the time
+    local fps = love and love.timer and love.timer.getFPS and math.floor(love.timer.getFPS() / 5 + 0.5) * 5 or nil
+    if slui.partySession == session and slui.partySig == text and slui.partyFps == fps then return end
+    slui.partySession, slui.partySig, slui.partyFps = session, text, fps
+    session:sendParty(list, fps)
   end
 
   mod.partySend = slui.sendParty
+
+  -- A frame slower than about 24 fps normally loses game time, so a slow
+  -- computer runs a shared battle in slow motion and its partner waits every
+  -- turn. In a link battle the time is kept instead.
+  do
+    local okF, FixedStep = pcall(require, "src.core.FixedStep")
+    if okF and type(FixedStep) == "table" and not FixedStep._g3coopCatchup then
+      FixedStep._g3coopCatchup = true
+      local limit = FixedStep.catchupLimit
+      FixedStep.catchupLimit = function(speed, dt, ...)
+        local cap = limit(speed, dt, ...)
+        local Battle = engine("battle")
+        local st = Battle and Battle.isActive and Battle.isActive() and Battle.getState and Battle.getState()
+        if st and st.link and tonumber(dt) then return math.max(cap, math.min(dt * 1.25, 0.25)) end
+        return cap
+      end
+    end
+  end
+
+  -- the connection, for telling a slow game from a slow line
+  function slui.linkRow()
+    local c = Hud.COLORS
+    local fps = love and love.timer and love.timer.getFPS and love.timer.getFPS() or 0
+    local okP, rtt = pcall(function() return session.net.peer:round_trip_time() end)
+    local them = session and session.partnerFps
+    return { "Connection", ("ping %s   you %d fps   partner %s fps"):format(okP and tostring(rtt) .. " ms" or "?", fps,
+      them and tostring(them) or "?"), (fps < 30 or (them and them < 30)) and c.warn or c.text }
+  end
 
   -- TEAM tab: what the partner last sent, as label / text / colour rows
   function slui.teamRows()
     local list = session and session.partnerParty
     local c = Hud.COLORS
     if not (session and session.state == "connected") then return { { "Partner", "not connected", c.dim } } end
-    if not list then return { { "Partner", "waiting for their team...", c.dim } } end
+    if not list then return { slui.linkRow(), { "Partner", "waiting for their team...", c.dim } } end
     local P, Moves, Items = engine("pokemon"), engine("battle.moves"), engine("items_data")
-    local rows = {}
+    local rows = { slui.linkRow() }
     for _, m in ipairs(list) do
       local name = m.n or (P and P.name and P.name(m.s)) or "?"
       local hp = ("HP %d/%d"):format(m.h, m.x)

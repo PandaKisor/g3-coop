@@ -158,7 +158,7 @@ end
 
 -- This player's party, for the partner's TEAM tab: up to six rows of
 -- { s species, l level, h hp, x max hp, i item, st status, n nickname, mv moves }
-function Protocol.party(list) return { type = Protocol.PARTY, p = list } end
+function Protocol.party(list, fps) return { type = Protocol.PARTY, p = list, f = fps } end
 
 -- A team battle's setup for channel c (lib/teambattle.lua): plain data
 -- (names, parties, the host's foes and seed) packed by Protocol.packTree.
@@ -505,7 +505,7 @@ end
 
 validators[Protocol.PARTY] = function(m)
   if type(m.p) ~= "table" or #m.p > 6 then return nil, "bad_party" end
-  local out = { type = m.type, p = {} }
+  local out = { type = m.type, p = {}, f = int(m.f, 0, 1000) }
   for i = 1, #m.p do
     local e = m.p[i]
     if type(e) ~= "table" then return nil, "bad_party" end

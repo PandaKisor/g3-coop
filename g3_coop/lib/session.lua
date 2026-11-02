@@ -133,6 +133,7 @@ function Session:_receive(raw)
       if #self.resumes < 16 then self.resumes[#self.resumes + 1] = msg end
     elseif msg.type == P.PARTY then
       self.partnerParty = msg.p
+      self.partnerFps = msg.f or self.partnerFps
     elseif msg.type == P.SL then
       if #self.sl < 64 then self.sl[#self.sl + 1] = msg end
     elseif msg.type == P.NPC then
@@ -219,8 +220,8 @@ function Session:takeSoulLink()
   return list
 end
 
-function Session:sendParty(list)
-  if self.state == "connected" then self:_send(self.P.party(list)) end
+function Session:sendParty(list, fps)
+  if self.state == "connected" then self:_send(self.P.party(list, fps)) end
 end
 
 function Session:sendPing(text)

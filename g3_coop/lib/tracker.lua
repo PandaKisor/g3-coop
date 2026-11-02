@@ -710,6 +710,20 @@ function Tracker:linkedName(mon)
   end
 end
 
+-- The name of a POKeMON's Soul Link partner, whichever side it's on: this
+-- save's own, or the partner's beside you in a shared battle.
+function Tracker:pairedName(mon)
+  if not (self.run and mon) then return nil end
+  local u = self.SL.uid(mon)
+  if not u then return nil end
+  for _, row in ipairs(self:view().pairs) do
+    if row.mine and row.theirs then
+      if row.mine.u == u then return self:_monName(row.theirs.u, row.theirs.s) end
+      if row.theirs.u == u then return self:_monName(row.mine.u, row.mine.s) end
+    end
+  end
+end
+
 -- Whether this line is already in the run (the dupes clause counts it).
 function Tracker:lineTaken(species)
   if not self.run then return false end
