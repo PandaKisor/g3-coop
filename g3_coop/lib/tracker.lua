@@ -724,6 +724,20 @@ function Tracker:pairedName(mon)
   end
 end
 
+-- For a POKeMON on this save: "linked" while its pair lives, "fallen" once the
+-- pair is lost, nil when it has no link yet.
+function Tracker:linkState(mon)
+  if not (self.run and mon) then return nil end
+  local u = self.SL.uid(mon)
+  if not u then return nil end
+  local v = self:view()
+  if v.dead[u] then return "fallen" end
+  for _, row in ipairs(v.pairs) do
+    if row.mine and row.mine.u == u and row.theirs then return "linked" end
+  end
+  return nil
+end
+
 -- Whether this line is already in the run (the dupes clause counts it).
 function Tracker:lineTaken(species)
   if not self.run then return false end

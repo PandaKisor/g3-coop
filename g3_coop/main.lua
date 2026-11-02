@@ -2580,6 +2580,31 @@ return function(mod)
     return slui.links
   end
 
+  -- the summary and party screens: the Pokemon in focus at a glance
+  function slui.monCard()
+    local Sm, Pm = uiModule("summary_menu"), uiModule("party_menu")
+    local mon
+    if Sm and Sm.isOpen and Sm.isOpen() then
+      local S = Sm._nativeDelegate or Sm
+      mon = (S._party and S._party[S._cursor or 1]) or (Sm._party and Sm._party[Sm._cursor or 1])
+    elseif Pm and Pm.open and Pm._party then
+      mon = Pm._party[Pm.cursor or Pm._cursor or 1]
+    end
+    if not mon then return nil end
+    local lines = {}
+    local linked = tracker and tracker:pairedName(mon)
+    if linked then lines[1] = { "Linked: " .. linked, Hud.COLORS.sl } end
+    local function row(t, name)
+      if type(t) ~= "table" then return end
+      local get = function(k) return tonumber(t[k]) or 0 end
+      lines[#lines + 1] = ("%s %d %d %d %d %d %d"):format(name, get("hp"), get("atk"), get("def"), get("spa"), get("spd"), get("spe"))
+    end
+    row(mon.ivs, "IV")
+    row(mon.evs, "EV")
+    if #lines == 0 then return nil end
+    return { dot = "wait", title = "HP ATK DEF SPA SPD SPE", lines = lines }
+  end
+
   -- the campaign's stat, field and matchup card while choosing in a battle,
   -- with the Soul Link pairs out on the field shown all through the battle
   function slui.battleCard()
@@ -2588,7 +2613,7 @@ return function(mod)
       if type(ex) == "table" and type(ex.campaignBattleInfo) == "function" then card = ex.campaignBattleInfo() end
     end
     local links = slui.linkLines()
-    if not links then return card end
+    if not links then return card or slui.monCard() end
     card = card or { dot = "wait", title = "SOUL LINK", lines = {} }
     for i, l in ipairs(links) do table.insert(card.lines, i, { l, Hud.COLORS.sl }) end
     return card
@@ -3011,6 +3036,7 @@ return function(mod)
   mod.exports.status = statusLine
   mod.exports.session = function() return session end
   mod.exports.coopBanned = function(mon) return tracker:isBanned(mon) end
+  mod.exports.coopLinkState = function(mon) return tracker:linkState(mon) end
   mod.exports.compat = compat
   mod.exports.toasts = function() return toasts end
   mod.exports.drawEntry = partnerDrawEntry
