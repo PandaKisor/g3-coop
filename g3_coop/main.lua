@@ -2602,6 +2602,10 @@ return function(mod)
 
   -- the summary and party screens: the Pokemon in focus at a glance
   -- the Start menu or any screen on the UI stack (not the field's message box)
+  function slui.inBattle()
+    local B = engine("battle")
+    return B and B.isActive and B.isActive() and true or false
+  end
   function slui.menuOpen()
     local SM = uiModule("start_menu")
     if SM and SM.isOpen and SM.isOpen() then return true end
@@ -3055,7 +3059,8 @@ return function(mod)
     -- a menu or screen is open: the cards move to the strip beside the
     -- picture when it's wide enough, and otherwise only the Pokemon card
     -- and toasts stay (the Start menu sits where the status card would)
-    local menuOpen, docked = slui.menuOpen(), false
+    -- (in battle too: the scene's boxes and sprites fill the picture)
+    local menuOpen, docked = slui.menuOpen() or slui.inBattle(), false
     if menuOpen then
       local right = (viewport.width or 0) - ((viewport.gameX or 0) + (viewport.gameWidth or 0))
       if right >= 120 then

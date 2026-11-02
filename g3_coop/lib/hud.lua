@@ -61,7 +61,9 @@ end
 -- larger size.
 function Hud:_setup(vp, big)
   local scale = math.max(1, tonumber(vp.scale) or 2)
-  local k = math.max(1, math.floor(scale / (big and 2.5 or 3.5) + 0.5))
+  -- cards and toasts over the field read at the panel's size; docked in
+  -- the narrow strip beside a menu they stay small
+  local k = math.max(1, math.floor(scale / ((big or not vp.dockX) and 2.5 or 3.5) + 0.5))
   self.u = scale
   -- the game's font, at k times its pixel size
   if self.frlg == nil then
