@@ -639,6 +639,7 @@ return function(mod)
     if Field and Field.isLocked and Field.isLocked() then return false end
     return true
   end
+  mod.fieldFree = fieldFree
 
   local RESULT_TEXT = { win = "You won the battle!", lose = "You lost the battle.", run = "You got away safely.",
                         draw = "The battle ended in a draw." }
@@ -1150,6 +1151,7 @@ return function(mod)
     if not session then return end
     session:tick(snapshot(g))
     if mod.partySend then pcall(mod.partySend) end
+    if mod.partyPump then pcall(mod.partyPump) end
     if session.state == "refused" or session.state == "closed" then
       local why = session.reason
       if session.sameMachine == true and why == "network_error" then
@@ -1544,6 +1546,11 @@ return function(mod)
       end
       return true
     end
+    if slui.ping and ev then
+      if ev.phase == "pressed" then slui.pingInput(ev.key) end
+      return true
+    end
+    if ev and ev.phase == "pressed" and ev.key == "f6" and slui.openPing() then return true end
     if ev and ev.phase == "pressed" and ev.key == "f7" then
       openPanel(not slPanel)
       return true
@@ -1581,6 +1588,11 @@ return function(mod)
       if ev.phase == "pressed" then editorKey(EDIT_PAD[ev.button]) end
       return true
     end
+    if slui.ping and ev then
+      if ev.phase == "pressed" then slui.pingInput(ev.button) end
+      return true
+    end
+    if ev and ev.phase == "pressed" and ev.button == "back" and slui.openPing() then return true end
     if slPanel and ev and ev.phase == "pressed" then
       slui.panelInput(ev.button, PAD_SCROLL[ev.button], PAD_CLOSE[ev.button])
       return true
@@ -1605,7 +1617,7 @@ return function(mod)
     local s = session
     if s and s.state == "connected" then
       local name = tostring(s.peer and s.peer.name or "your partner")
-      ui.menu("Playing with " .. name .. ".", { "LEAVE", "READY CHECK", "SOUL LINK", "CANCEL" }, function(i)
+      ui.menu("Playing with " .. name .. ".", { "LEAVE", "READY CHECK", "SEND ITEM", "GO TO PARTNER", "SOUL LINK", "CANCEL" }, function(i)
         if i == 0 then
           ui.ask("Stop playing with " .. name .. "?", function(yes)
             if yes then
@@ -1617,6 +1629,10 @@ return function(mod)
         elseif i == 1 then
           if requests then requests:request("ready") end
         elseif i == 2 then
+          slui.chooseItem()
+        elseif i == 3 then
+          slui.goToPartner()
+        elseif i == 4 then
           openPanel(true)
         end
       end)
@@ -2667,6 +2683,122 @@ return function(mod)
     return rows
   end
 
+  -- Battle pings: F6 or SELECT while choosing opens a short list of lines
+  function slui.canPing()
+    local Battle = engine("battle")
+    local st = Battle and Battle.isActive and Battle.isActive() and Battle.getState and Battle.getState()
+    return st and st.coopTeam and Battle._dblSel and session and session.state == "connected" and st or nil
+  end
+  function slui.openPing()
+    local st = slui.canPing()
+    if not st then return false end
+    local State, opts = engine("battle.state"), {}
+    for _, id in ipairs({ 1, 3 }) do
+      local b = State.battler(st, id)
+      if b and not State.isAbsent(st, id) and (tonumber(b.mon and b.mon.hp) or 0) > 0 then
+        opts[#opts + 1] = "Focus " .. tostring(State.displayName(b))
+      end
+    end
+    for _, line in ipairs({ "I'll Protect", "I'm switching", "You choose", "Careful!" }) do opts[#opts + 1] = line end
+    slui.ping = { sel = 1, options = opts }
+    return true
+  end
+  function slui.pingInput(key)
+    local p = slui.ping
+    if key == "up" or key == "left" or key == "dpup" or key == "dpleft" then
+      p.sel = (p.sel - 2) % #p.options + 1
+    elseif key == "down" or key == "right" or key == "dpdown" or key == "dpright" then
+      p.sel = p.sel % #p.options + 1
+    elseif key == "z" or key == "return" or key == "a" then
+      if session then session:sendPing(p.options[p.sel]) end
+      toast("You: " .. p.options[p.sel], 3)
+      slui.ping = nil
+    elseif key == "x" or key == "b" or key == "f6" or key == "back" or key == "escape" then
+      slui.ping = nil
+    end
+  end
+
+  -- Sending an item: it leaves this bag at once and stays on a list in mod
+  -- storage until the partner answers, so a drop resends it. The partner keeps
+  -- the numbers it has taken, so a resend can't give it twice.
+  function slui.itemOut() return (select(2, pcall(mod.storage.read, mod.storage, game, "item_out"))) or {} end
+  function slui.sendItem(id)
+    local rt, Bag, Items = engine("runtime"), engine("bag"), engine("items_data")
+    local s = rt.getSession()
+    if not (s and s.bag and session) or id == 0 then return end
+    if Items.pocketOf(id) == "KEY_ITEMS" then return toast("Key items can't be sent.", 3) end
+    if not Bag.remove(s.bag, id, 1) then return end
+    local out = slui.itemOut()
+    out.seq = (tonumber(out.seq) or 0) + 1
+    out[#out + 1] = { n = out.seq, i = id }
+    pcall(mod.storage.write, mod.storage, game, "item_out", out)
+    session:sendItem(out.seq, id)
+    toast("Sent " .. tostring(Items.displayName(id)) .. ".", 3)
+  end
+  function slui.chooseItem()
+    local Screens, rt = uiModule("screens"), engine("runtime")
+    local s = rt and rt.getSession()
+    if not (Screens and s and session) then return end
+    Screens.get("bag", s).show(s, { bag = s.bag, location = "party", onChoose = function(id) slui.sendItem(tonumber(id) or 0) end })
+  end
+  function slui.pumpItems()
+    if not (session and session.state == "connected") then return end
+    if slui.itemSession ~= session then
+      slui.itemSession = session
+      for _, row in ipairs(slui.itemOut()) do session:sendItem(row.n, row.i) end
+    end
+    local rt, Bag, Items = engine("runtime"), engine("bag"), engine("items_data")
+    local name = tostring(session.peer and session.peer.name or "Your partner")
+    for _, msg in ipairs(session:takeList("itemMsgs")) do
+      local s = rt.getSession()
+      if msg.ack then
+        local out, kept, gave = slui.itemOut(), { seq = nil }, nil
+        kept.seq = out.seq
+        for _, row in ipairs(out) do
+          if row.n == msg.n then gave = row else kept[#kept + 1] = row end
+        end
+        pcall(mod.storage.write, mod.storage, game, "item_out", kept)
+        if gave and msg.no and s then
+          Bag.add(s.bag, gave.i, 1)
+          toast(name .. "'s bag is full: the item came back.", 4)
+        end
+      elseif s and s.bag then
+        local okR, seen = pcall(mod.storage.read, mod.storage, game, "item_seen")
+        seen = okR and seen or {}
+        local key = tostring(msg.n)
+        if seen[key] then
+          session:ackItem(msg.n)
+        elseif Bag.canAdd(s.bag, msg.i, 1) then
+          Bag.add(s.bag, msg.i, 1)
+          seen[key] = true
+          pcall(mod.storage.write, mod.storage, game, "item_seen", seen)
+          session:ackItem(msg.n)
+          toast(("%s sent you %s."):format(name, tostring(Items.displayName(msg.i))), 4)
+        else
+          session:ackItem(msg.n, true)
+        end
+      end
+    end
+    for _, text in ipairs(session:takeList("pings")) do toast(name .. ": " .. text, 4) end
+  end
+  mod.partyPump = slui.pumpItems
+
+  -- Teleport: to the partner's tile, after a yes; not onto water
+  function slui.goToPartner()
+    local g = session and session.ghost
+    if not (g and g.known and g.map) then return toast("Can't tell where your partner is yet.", 3) end
+    if g.surfing then return toast("Your partner is on the water.", 3) end
+    if not mod.fieldFree() then return toast("Not right now.", 3) end
+    ui.ask("Go to your partner?\nYour story doesn't change.", function(yes)
+      if not yes then return end
+      local Map = engine("map")
+      local x, y, map = g.targetX or g.cellX, g.targetY or g.cellY, g.map
+      if not (x and y) then return toast("Can't tell where your partner is yet.", 3) end
+      local ok, err = pcall(Map.load, nil, game, map, { x = x, y = y, facing = "down" })
+      if not ok then toast("Couldn't go there.", 3); mod.log:warn("teleport: %s", tostring(err)) end
+    end)
+  end
+
   -- PC warnings: a linked POKeMON leaving the team, or the game
   function slui.linkWarning(mon, what)
     local name = tracker and tracker.linkedName and tracker:linkedName(mon)
@@ -2791,6 +2923,12 @@ return function(mod)
         end, view)
       if ok then panelMax = max or 0 else mod.log:warn("soul link panel: %s", tostring(max)) end
       return
+    end
+    if slui.ping then
+      if not slui.canPing() then slui.ping = nil else
+        pcall(hud.drawChoice, hud, viewport, "Tell your partner", {}, slui.ping.options, slui.ping.sel)
+        return
+      end
     end
     local y
     -- the choosing screen's battle info shows in any battle, shared ones too

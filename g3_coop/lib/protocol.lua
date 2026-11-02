@@ -32,6 +32,8 @@ Protocol.NPC = "coop_npc"
 Protocol.SL = "coop_sl"
 Protocol.PARTY = "coop_party"
 Protocol.RESUME = "coop_resume"
+Protocol.PING = "coop_ping"
+Protocol.ITEM = "coop_item"
 Protocol.TEAM = "coop_team"
 Protocol.CREDIT = "coop_credit"
 -- the field guide snapshot (party + box) a player shares with the partner
@@ -124,6 +126,14 @@ end
 function Protocol.link(c, m, s, a)
   return { type = Protocol.LINK, c = c, m = m, s = s, a = a }
 end
+
+-- a quick line to the partner in a battle
+function Protocol.ping(text) return { type = Protocol.PING, t = text } end
+
+-- one item for the partner: n numbers it so a resend can't give it twice;
+-- the answer carries ack = true (and no = true when it didn't fit)
+function Protocol.item(n, id) return { type = Protocol.ITEM, n = n, i = id } end
+function Protocol.itemAck(n, no) return { type = Protocol.ITEM, n = n, ack = true, no = no == true or nil } end
 
 -- after a dropped connection: channel c, what we have of it; none = true means
 -- we have no such channel any more (the partner's game restarted)
@@ -396,6 +406,21 @@ validators[Protocol.LINK] = function(m)
     return nil, "bad_link"
   end
   return { type = m.type, c = c, m = inner, s = int(m.s, 1, 2 ^ 31), a = int(m.a, 0, 2 ^ 31) }
+end
+
+validators[Protocol.PING] = function(m)
+  local t = str(m.t, 48)
+  if not t then return nil, "bad_ping" end
+  return { type = m.type, t = (t:gsub("%c", " ")) }
+end
+
+validators[Protocol.ITEM] = function(m)
+  local n = int(m.n, 1, 2 ^ 31)
+  if not n then return nil, "bad_item" end
+  if m.ack == true then return { type = m.type, n = n, ack = true, no = m.no == true } end
+  local i = int(m.i, 1, 65535)
+  if not i then return nil, "bad_item" end
+  return { type = m.type, n = n, i = i }
 end
 
 validators[Protocol.RESUME] = function(m)

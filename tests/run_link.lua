@@ -390,6 +390,24 @@ do
   check(not E.LT.loopbackCommit, "and the commit mode as it found it")
 end
 
+-- ------- pings and item messages
+
+do
+  eq(Protocol.validate(Protocol.ping("Focus Torchic")).t, "Focus Torchic", "a ping validates")
+  eq(Protocol.validate(Protocol.ping(string.rep("x", 49))), nil, "a long ping is refused")
+  local m = Protocol.validate(Protocol.item(3, 25))
+  check(m and m.n == 3 and m.i == 25, "an item validates")
+  eq(Protocol.validate(Protocol.item(3, 0)), nil, "item 0 is refused")
+  m = Protocol.validate(Protocol.itemAck(3, true))
+  check(m and m.ack and m.no, "an answer carries its no")
+  local sa, sb = pair()
+  sa:sendPing("Careful!"); sa:sendItem(1, 25)
+  for _ = 1, 4 do sa:tick(); sb:tick() end
+  eq(sb:takeList("pings")[1], "Careful!", "the ping arrives")
+  eq(sb:takeList("itemMsgs")[1].i, 25, "the item arrives")
+  eq(#sb:takeList("pings"), 0, "once")
+end
+
 -- ------- ready check: a question, nothing starts
 
 do

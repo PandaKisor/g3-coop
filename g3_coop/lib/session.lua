@@ -122,6 +122,12 @@ function Session:_receive(raw)
     elseif msg.type == P.TEAM then
       -- one setup per channel; a second one for the same number is ignored
       if self.teams[msg.c] == nil then self.teams[msg.c] = msg.d end
+    elseif msg.type == P.PING then
+      self.pings = self.pings or {}
+      if #self.pings < 8 then self.pings[#self.pings + 1] = msg.t end
+    elseif msg.type == P.ITEM then
+      self.itemMsgs = self.itemMsgs or {}
+      if #self.itemMsgs < 32 then self.itemMsgs[#self.itemMsgs + 1] = msg end
     elseif msg.type == P.RESUME then
       self.resumes = self.resumes or {}
       if #self.resumes < 16 then self.resumes[#self.resumes + 1] = msg end
@@ -215,6 +221,24 @@ end
 
 function Session:sendParty(list)
   if self.state == "connected" then self:_send(self.P.party(list)) end
+end
+
+function Session:sendPing(text)
+  if self.state == "connected" then self:_send(self.P.ping(text)) end
+end
+
+function Session:sendItem(n, id)
+  if self.state == "connected" then self:_send(self.P.item(n, id)) end
+end
+
+function Session:ackItem(n, no)
+  if self.state == "connected" then self:_send(self.P.itemAck(n, no)) end
+end
+
+function Session:takeList(field)
+  local list = self[field] or {}
+  self[field] = nil
+  return list
 end
 
 function Session:sendSoulLink(fields)
