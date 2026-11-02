@@ -2581,6 +2581,16 @@ return function(mod)
   end
 
   -- the summary and party screens: the Pokemon in focus at a glance
+  -- the Start menu or any screen on the UI stack (not the field's message box)
+  function slui.menuOpen()
+    local SM = uiModule("start_menu")
+    if SM and SM.isOpen and SM.isOpen() then return true end
+    local St = uiModule("stack")
+    local top = St and St.top and St.top()
+    if not top then return false end
+    return top.mod ~= uiModule("message")
+  end
+
   function slui.monCard()
     local Sm, Pm = uiModule("summary_menu"), uiModule("party_menu")
     local mon
@@ -2594,6 +2604,15 @@ return function(mod)
     local lines = {}
     local linked = tracker and tracker:pairedName(mon)
     if linked then lines[1] = { "Linked: " .. linked, Hud.COLORS.sl } end
+    -- docked beside the picture: a stat per row, IV then EV
+    if slui.docked and (type(mon.ivs) == "table" or type(mon.evs) == "table") then
+      local iv, ev = type(mon.ivs) == "table" and mon.ivs or {}, type(mon.evs) == "table" and mon.evs or {}
+      lines[#lines + 1] = { "", Hud.COLORS.dim, cols = { "IV", "EV" } }
+      for _, k in ipairs({ "hp", "atk", "def", "spa", "spd", "spe" }) do
+        lines[#lines + 1] = { k:upper(), Hud.COLORS.dim, cols = { tostring(tonumber(iv[k]) or 0), tostring(tonumber(ev[k]) or 0) }, colColor = Hud.COLORS.text }
+      end
+      return { dot = "wait", title = "STATS", lines = lines }
+    end
     local function row(t, name)
       if type(t) ~= "table" then return end
       local get = function(k) return tonumber(t[k]) or 0 end
@@ -3013,13 +3032,25 @@ return function(mod)
       end
     end
     local y
+    -- a menu or screen is open: the cards move to the strip beside the
+    -- picture when it's wide enough, and otherwise only the Pokemon card
+    -- and toasts stay (the Start menu sits where the status card would)
+    local menuOpen, docked = slui.menuOpen(), false
+    if menuOpen then
+      local right = (viewport.width or 0) - ((viewport.gameX or 0) + (viewport.gameWidth or 0))
+      if right >= 120 then
+        viewport = setmetatable({ dockX = viewport.gameX + viewport.gameWidth, dockW = right }, { __index = viewport })
+        docked = true
+      end
+    end
+    slui.docked = docked
     -- the choosing screen's battle info shows in any battle, shared ones too
     local okB, battleCard = pcall(slui.battleCard)
     if okB and battleCard then
       local okD, below = pcall(hud.drawCard, hud, viewport, battleCard)
       if okD then y = below else mod.log:warn("battle card: %s", tostring(below)) end
     -- the battle and trade screens use the whole screen; keep the toasts
-    elseif mod.options:get("hud") and not (activity and activity.stage ~= "link") then
+    elseif mod.options:get("hud") and not (activity and activity.stage ~= "link") and (docked or not menuOpen) then
       local okC, card = pcall(cardInfo)
       if okC and not card then okC, card = pcall(slui.nextCard) end
       if okC and card then

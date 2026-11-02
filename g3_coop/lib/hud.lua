@@ -11,10 +11,12 @@ Hud.__index = Hud
 Hud.FONT = "assets/fonts/plainpixel/PlainPixel-Regular.ttf"
 Hud.FONT_EM = 15
 
+-- the campaign's palette (campaign/ui_style.lua): its ink for the boxes,
+-- its Emerald green for co-op
 local C = {
-  bg = { 0.07, 0.08, 0.12, 0.9 }, edge = { 1, 1, 1, 0.14 }, row = { 1, 1, 1, 0.04 },
-  text = { 1, 1, 1, 1 }, dim = { 0.66, 0.69, 0.78, 1 },
-  coop = { 0.36, 0.82, 0.76, 1 }, sl = { 0.72, 0.56, 1, 1 },
+  bg = { 0.165, 0.196, 0.235, 0.92 }, edge = { 0.275, 0.722, 0.612, 0.35 }, row = { 1, 1, 1, 0.04 },
+  text = { 1, 1, 1, 1 }, dim = { 0.70, 0.74, 0.80, 1 },
+  coop = { 0.275, 0.722, 0.612, 1 }, sl = { 0.72, 0.56, 1, 1 },
   good = { 0.45, 0.9, 0.5, 1 }, warn = { 1, 0.78, 0.32, 1 }, bad = { 1, 0.42, 0.42, 1 },
 }
 Hud.COLORS = C
@@ -76,6 +78,17 @@ function Hud:_setup(vp, big)
   self.gx, self.gy = 0, 0
   self.gw = vp.width or vp.gameWidth or 240 * scale
   self.gh = vp.height or vp.gameHeight or 160 * scale
+  -- docked: cards and toasts keep to the strip beside the game picture
+  -- while a menu or screen is open (vp.dockX/dockW from main.lua)
+  self.docked = vp.dockX ~= nil
+  if self.docked then self.gx, self.gw = vp.dockX, vp.dockW end
+end
+
+-- the widest a card or toast may be: the dock, or a share of the window
+function Hud:_maxW(share)
+  local pad = math.max(3, self.u * 2)
+  if self.docked then return math.max(40, self.gw - pad * 2) end
+  return math.floor(self.gw * share)
 end
 
 function Hud:w(text) return self.font:getWidth(tostring(text)) * self.fs end
@@ -116,19 +129,26 @@ end
 function Hud:drawCard(vp, card)
   self:_setup(vp)
   local pad = math.max(3, self.u * 2)
-  local maxW = math.floor(self.gw * 0.5)
+  local maxW = self:_maxW(0.5)
   local lines = {}
   for _, l in ipairs(card.lines or {}) do
     local text, color = l, C.dim
     if type(l) == "table" then text, color = l[1], l[2] end
-    for _, w in ipairs(Hud.wrap(function(t) return self:w(t) end, text, maxW)) do
-      lines[#lines + 1] = { w, color }
+    if type(l) == "table" and l.cols then
+      lines[#lines + 1] = { text, color, cols = l.cols }
+    else
+      for _, w in ipairs(Hud.wrap(function(t) return self:w(t) end, text, maxW)) do
+        lines[#lines + 1] = { w, color }
+      end
     end
   end
+  -- right-aligned number columns ({ text, color, cols = { ... } })
+  local colW = self:w("000") + pad
+  local function rowW(l) return self:w(l[1]) + (l.cols and (pad + colW * #l.cols) or 0) end
   local dotW = self.lh / 2.5 + pad
   local titleW = dotW + self:w(card.title) + (card.right and (pad * 2 + self:w(card.right)) or 0)
   local width = titleW
-  for _, l in ipairs(lines) do width = math.max(width, self:w(l[1])) end
+  for _, l in ipairs(lines) do width = math.max(width, rowW(l)) end
   width = math.min(width, maxW) + pad * 2
   local height = self.lh * (1 + #lines) + pad * 2
   local x = self.gx + self.gw - width - pad
@@ -140,7 +160,13 @@ function Hud:drawCard(vp, card)
   if card.right then
     self:_print(card.right, x + width - pad - self:w(card.right), cy, C.dim)
   end
-  for i, l in ipairs(lines) do self:_print(l[1], cx, cy + i * self.lh, l[2]) end
+  for i, l in ipairs(lines) do
+    self:_print(l[1], cx, cy + i * self.lh, l[2])
+    for j, v in ipairs(l.cols or {}) do
+      local right = x + width - pad - (#l.cols - j) * colW
+      self:_print(v, right - self:w(v), cy + i * self.lh, l.colColor or l[2])
+    end
+  end
   return y + height + pad / 2
 end
 
@@ -151,7 +177,7 @@ end
 function Hud:drawToasts(vp, toasts, y, now)
   self:_setup(vp)
   local pad = math.max(3, self.u * 2)
-  local maxW = math.floor(self.gw * 0.55)
+  local maxW = self:_maxW(0.55)
   y = y or (self.gy + pad)
   for _, t in ipairs(toasts) do
     local alpha = math.min(1, (now - (t.born or now)) / 0.15, (t.untilT - now) / 0.4)
